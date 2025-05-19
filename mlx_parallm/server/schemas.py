@@ -145,6 +145,28 @@ class ChatCompletionResponse(BaseModel):
     usage: CompletionUsage
     # system_fingerprint: Optional[str] = None # TODO: Add if we can get this
 
+# ---- Streaming Schemas for Chat Completions ----
+
+class DeltaMessage(BaseModel):
+    role: Optional[str] = None
+    content: Optional[str] = None
+    # tool_calls: Optional[List[Any]] = None # For future tool use support
+
+class ChatCompletionStreamChoice(BaseModel):
+    index: int
+    delta: DeltaMessage
+    finish_reason: Optional[str] = None # "stop", "length", "tool_calls", "content_filter"
+    # logprobs: Optional[LogProbs] = None # If logprobs are supported in streaming
+
+class ChatCompletionChunk(BaseModel):
+    id: str # Should be the same ID as the original ChatCompletionRequest if possible, or a new unique ID for the stream
+    object: str = "chat.completion.chunk"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    model: str # Model name/ID
+    choices: List[ChatCompletionStreamChoice]
+    # usage: Optional[CompletionUsage] = None # Usage stats are typically not sent with each chunk
+    # system_fingerprint: Optional[str] = None # TODO: Add if we can get this
+
 # Need to import these for ModelPermission if re-enabled or CompletionResponse ID generation
 import random
 import string 

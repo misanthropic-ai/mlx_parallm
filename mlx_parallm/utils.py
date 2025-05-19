@@ -773,3 +773,103 @@ def convert(
 
     if upload_repo is not None:
         upload_to_hub(mlx_path, upload_repo, hf_path)
+
+def batch_stream_generate_text(
+    model: nn.Module,
+    tokenizer: TokenizerWrapper, # Expecting TokenizerWrapper
+    prompts_tokens: mx.array,    # Batched and padded tokenized prompts from tokenizer._tokenizer(prompts_list, padding=True)['input_ids']
+    max_tokens: int,
+    **kwargs # Passed to generate_step (e.g., temp, top_p)
+) -> Generator[List[Tuple[Optional[str], Optional[str]]], None, None]:
+    """
+    Streams generated text segments for a batch of prompts.
+
+    Args:
+        model (nn.Module): The language model.
+        tokenizer (TokenizerWrapper): The tokenizer wrapper.
+        prompts_tokens (mx.array): Batched and padded tokenized input prompts.
+        max_tokens (int): The maximum number of tokens to generate for each prompt.
+        **kwargs: Additional arguments to pass to `generate_step`.
+
+    Yields:
+        Generator[List[Tuple[Optional[str], Optional[str]]], None, None]:
+        A list where each element corresponds to a prompt in the batch.
+        Each element is a tuple: (text_delta: Optional[str], finish_reason: Optional[str]).
+        - text_delta: The newly generated text segment for this step.
+        - finish_reason: "stop" if EOS is reached, "length" if max_tokens is reached.
+    """
+    batch_size = prompts_tokens.shape[0]
+    
+    # Each sequence in the batch needs its own detokenizer state
+    # Ensure the tokenizer passed is a TokenizerWrapper as it has the .detokenizer property
+    if not isinstance(tokenizer, TokenizerWrapper):
+        # This case should ideally be handled before calling, or ensure TokenizerWrapper is always used.
+        # Forcing it here, but this might indicate a type inconsistency upstream.
+        tokenizer = TokenizerWrapper(tokenizer)
+
+    detokenizers = [copy.deepcopy(tokenizer.detokenizer) for _ in range(batch_size)]
+    for detok in detokenizers:
+        detok.reset() # Ensure each detokenizer is in a clean state
+
+    active_sequences = [True] * batch_size
+    generated_tokens_counts = [0] * batch_size
+    eos_token_id = tokenizer.eos_token_id
+
+    # Remove 'repetition_penalty' from kwargs if present, as generate_step doesn't support it yet
+    # and would raise NotImplementedError.
+    # Or, ensure generate_step is updated if we intend to support it.
+    # For now, following the pattern of stream_generate which doesn't explicitly pass it to generate_step.
+    current_generate_step_kwargs = {k: v for k, v in kwargs.items() if k != 'repetition_penalty'}
+
+    for (batch_next_token_ids, _), _ in zip(
+        generate_step(prompts_tokens, model, **current_generate_step_kwargs), # generate_step yields (tokens, probs)
+        range(max_tokens) # Overall constraint on generated tokens
+    ):
+        # batch_next_token_ids is (batch_size, 1)
+        current_step_deltas: List[Tuple[Optional[str], Optional[str]]] = [(None, None)] * batch_size
+        any_sequence_active = False
+
+        for i in range(batch_size):
+            if not active_sequences[i]:
+                continue
+
+            any_sequence_active = True
+            token_id = batch_next_token_ids[i, 0].item()
+            generated_tokens_counts[i] += 1
+
+            current_text_delta = None
+            current_finish_reason = None
+
+            if token_id == eos_token_id:
+                active_sequences[i] = False
+                detokenizers[i].finalize() # Finalize before getting the last segment
+                current_text_delta = detokenizers[i].last_segment
+                current_finish_reason = "stop"
+            else:
+                detokenizers[i].add_token(token_id)
+                current_text_delta = detokenizers[i].last_segment
+            
+            # Check for max_tokens for this specific sequence
+            if active_sequences[i] and generated_tokens_counts[i] >= max_tokens:
+                active_sequences[i] = False
+                if not current_finish_reason: # If not already stopped by EOS
+                    detokenizers[i].finalize()
+                    # If there was a delta from add_token, it's already set.
+                    # If finalize produces more, ensure it's captured.
+                    final_segment = detokenizers[i].last_segment
+                    if final_segment: # Only overwrite if finalize gives something new or different
+                        current_text_delta = final_segment
+                    current_finish_reason = "length"
+
+            current_step_deltas[i] = (current_text_delta, current_finish_reason)
+
+        yield current_step_deltas
+
+        if not any_sequence_active:
+            break
+
+    # After the loop, some sequences might have been cut off by the outer max_tokens
+    # or by all sequences hitting EOS. If any were active and then stopped by the outer loop finishing,
+    # they should be finalized and marked with "length".
+    # This is implicitly handled if generated_tokens_counts[i] >= max_tokens leads to finish_reason = "length".
+    # No further explicit yield should be needed here if the loop correctly finalizes.
