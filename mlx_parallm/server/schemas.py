@@ -1,6 +1,15 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal, Any
+from typing import List, Optional, Literal, Any, Union, Dict
 import time
+import uuid
+from enum import Enum # Import Enum
+
+# Define ModelStatus Enum
+class ModelStatus(str, Enum):
+    LOADED = "loaded"
+    AVAILABLE_NOT_LOADED = "available_not_loaded"
+    ERROR_LOADING = "error_loading"
+    LOADING = "loading"
 
 class ModelPermission(BaseModel):
     # Replicating OpenAI's structure, though many fields might be fixed for now
@@ -27,7 +36,7 @@ class ModelCard(BaseModel):
     parent: Optional[str] = Field(None, description="The parent model ID if this is a variant.")
     
     # Custom fields for mlx_parallm
-    status: Literal["loaded", "available_not_loaded", "error_loading", "loading"] = Field("available_not_loaded", description="Current status of the model.")
+    status: ModelStatus = Field(ModelStatus.AVAILABLE_NOT_LOADED, description="Current status of the model.")
     type: Optional[Literal["causal_lm", "embedding", "classifier", "reward", "general_nn"]] = Field(None, description="Type of the model.")
     path_or_hf_id: Optional[str] = Field(None, description="Filesystem path or Hugging Face ID of the model.")
 
@@ -40,7 +49,7 @@ class InternalModelRecord(BaseModel):
     id: str
     path_or_hf_id: str
     model_type: Optional[Literal["causal_lm", "embedding", "classifier", "reward", "general_nn"]] = None
-    status: Literal["loaded", "available_not_loaded", "error_loading", "loading"] = "available_not_loaded"
+    status: ModelStatus = ModelStatus.AVAILABLE_NOT_LOADED
     created_timestamp: int = Field(default_factory=lambda: int(time.time()))
     owned_by: str = "mlx_parallm"
     
@@ -79,13 +88,12 @@ class CompletionChoice(BaseModel):
     finish_reason: Optional[Literal["stop", "length"]] = "stop"
 
 class CompletionResponse(BaseModel):
-    id: str = Field(default_factory=lambda: f"cmpl-{''.join(random.choices(string.ascii_letters + string.digits, k=24))}") # type: ignore
-    object: Literal["text_completion"] = "text_completion"
+    id: str = Field(default_factory=lambda: f"cmpl-{uuid.uuid4().hex[:29]}")
+    object: str = "text_completion"
     created: int = Field(default_factory=lambda: int(time.time()))
-    model: str # ID of the model used
+    model: str
     choices: List[CompletionChoice]
     usage: CompletionUsage
-    # system_fingerprint: Optional[str] = None # For later if needed
 
 class CompletionRequest(BaseModel):
     model: str = Field(..., description="ID of the model to use for completion.")
@@ -100,9 +108,42 @@ class CompletionRequest(BaseModel):
     # presence_penalty: float = Field(0.0, ge=-2.0, le=2.0) # For later
     # frequency_penalty: float = Field(0.0, ge=-2.0, le=2.0) # For later
     # user: Optional[str] = None # For later
-
     # TODO: Add more parameters as supported by mlx_parallm.utils.generate_step or mlx_lm.generate
     # e.g. repetition_penalty, logit_bias
+
+# Schemas for /v1/chat/completions
+class ChatMessage(BaseModel):
+    role: str # "system", "user", "assistant"
+    content: str
+    name: Optional[str] = None
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[ChatMessage]
+    temperature: Optional[float] = 0.7
+    top_p: Optional[float] = 1.0
+    n: Optional[int] = 1
+    stream: Optional[bool] = False
+    stop: Optional[Union[str, List[str]]] = None
+    max_tokens: Optional[int] = None
+    presence_penalty: Optional[float] = 0.0
+    frequency_penalty: Optional[float] = 0.0
+    logit_bias: Optional[Dict[str, float]] = None
+    user: Optional[str] = None
+
+class ChatCompletionChoice(BaseModel):
+    index: int
+    message: ChatMessage
+    finish_reason: Optional[str] = "stop" # "stop", "length", "content_filter", "tool_calls" (not yet supported)
+
+class ChatCompletionResponse(BaseModel):
+    id: str = Field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex[:28]}")
+    object: str = "chat.completion"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    model: str
+    choices: List[ChatCompletionChoice]
+    usage: CompletionUsage
+    # system_fingerprint: Optional[str] = None # TODO: Add if we can get this
 
 # Need to import these for ModelPermission if re-enabled or CompletionResponse ID generation
 import random
