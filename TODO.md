@@ -4,27 +4,31 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
 
 ## I. Core Server Infrastructure (FastAPI & Uvicorn)
 
-*   [ ] **Set up FastAPI Application:**
-    *   [ ] Initialize a basic FastAPI project structure.
-    *   [ ] Add `fastapi` and `uvicorn` to project dependencies (e.g., `requirements.txt` or `pyproject.toml`).
+*   [x] **Set up FastAPI Application:**
+    *   [x] Initialize a basic FastAPI project structure.
+    *   [x] Add `fastapi` and `uvicorn` to project dependencies (e.g., `requirements.txt` or `pyproject.toml`).
 *   [ ] **Implement Basic Endpoints:**
-    *   [ ] `/health`: Health check endpoint.
+    *   [x] `/health`: Health check endpoint.
     *   [ ] `/models`: Endpoint to list available/loaded models.
 *   [ ] **Configuration Management:**
     *   [ ] Implement a system for managing server configurations (e.g., host, port, model paths) using environment variables or a configuration file.
+    *   [ ] Configuration should support specifying multiple models (e.g., for startup loading or as a list of discoverable/available models).
 
 ## II. Model Management & Loading
 
-*   [ ] **Base Model Loading:**
+*   [ ] **Model Loading and Lifecycle Management:**
     *   [ ] Implement logic to load base Hugging Face models compatible with `mlx_lm`.
     *   [ ] Allow specification of model path/ID via API or configuration.
+    *   [ ] Design a clear model identifier scheme (e.g., user-provided name, derived from path/ID).
 *   [ ] **LoRA/DoRA Adapter Management:**
     *   [ ] Implement logic to load LoRA/DoRA adapters and apply them to a base model using `mlx_lm` utilities.
     *   [ ] API endpoint to list available/loaded adapters.
     *   [ ] API endpoint to load/unload adapters dynamically.
     *   [ ] Consider how to handle multiple adapters for the same base model.
-*   [ ] **Model Cache/Registry:**
-    *   [ ] Implement a system to manage loaded models and adapters to avoid redundant loading.
+*   [x] **Model Cache/Registry:**
+    *   [ ] Implement a central model registry to store and manage multiple loaded model instances and their metadata.
+    *   [ ] Metadata should include: identifier (ID), path/source, type (e.g., causal_lm, embedding, classifier), status ('loading', 'loaded', 'failed_to_load', 'unloaded', 'available_not_loaded'), quantization details, associated tokenizer/processor, creation/load timestamp.
+    *   [ ] The registry will be the source of truth for the `/v1/models` endpoint and internal model lookups.
 *   [ ] **Embedding Model Loading:**
     *   [ ] Implement logic to load embedding models (e.g., sentence transformers, other models with pooling heads) compatible with MLX.
     *   [ ] Support different pooling strategies if necessary.
@@ -60,7 +64,12 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
     *   [ ] Ensure efficient handling of tokenization and detokenization for batches.
 *   [ ] **Tokenizer Management:**
     *   [ ] Ensure tokenizer is loaded alongside the model and used consistently.
-*   [ ] **OpenAI-Compatible API Endpoints:**
+*   [x] **OpenAI-Compatible API Endpoints:**
+    *   [ ] **`/v1/models` Endpoint (OpenAI Compatible):**
+        *   [ ] Implement to list models known to the server.
+        *   [ ] Response format should align with OpenAI's `GET /v1/models`, returning an object with a `data` field containing a list of model objects.
+        *   [ ] Each model object should include fields like `id` (model identifier), `object` (fixed string "model"), `created` (timestamp of loading, if applicable), `owned_by` (e.g., "mlx_parallm", "user"), and potentially custom fields like `status` ("loaded", "available_not_loaded", "error_loading"), `type` (e.g., "causal_lm", "embedding").
+        *   [ ] This endpoint will query the Model Cache/Registry.
     *   [ ] **`/v1/completions` Endpoint:**
         *   [ ] Implement for raw text generation, compatible with OpenAI's completions API.
         *   [ ] Accept parameters: `model`, `prompt`, `max_tokens`, `temperature`, `top_p`, `n`, `stream`, `logprobs`, `stop`, `presence_penalty`, `frequency_penalty`, etc.
@@ -230,12 +239,33 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
 
 ## XIII. Build, Packaging & Deployment
 
-*   [ ] **Dependency Management:**
-    *   [ ] Finalize `requirements.txt` or `pyproject.toml` with all dependencies and versions.
+*   [x] **Dependency Management (with `pyproject.toml` and `uv`):**
+    *   [x] Initialize `pyproject.toml` as the primary source for project metadata and dependencies.
+    *   [ ] Use `uv pip install -e .` to install the project in editable mode and its dependencies for development.
+    *   [ ] For adding new packages: 
+        *   Use `uv add <package_name>` to add runtime dependencies.
+        *   Use `uv add <package_name> --dev` to add development dependencies (they will go into `[project.optional-dependencies]` or a `[tool.uv.dev-dependencies]` table).
+    *   [ ] `uv add` will update `pyproject.toml` and install the package.
+    *   [ ] Generate and maintain a lockfile (e.g., `requirements.lock.txt` or `uv.lock`) using `uv pip compile pyproject.toml --output-file <lockfile_name>` and use `uv sync --locked <lockfile_name>` for reproducible environments.
+    *   [ ] Remove `requirements.txt` if it's no longer used for active dependency management (or regenerate it from `pyproject.toml` if needed for specific tooling).
 *   [ ] **Containerization (Docker):**
     *   [ ] Create a `Dockerfile` for easier deployment.
+*   [x] **CLI Entrypoint (`mlx_parallm.serve`):**
+    *   [x] Implement a command-line interface using `pydantic-cli`.
+    *   [x] Create an entrypoint in `pyproject.toml` under `[project.scripts]` (`mlx_parallm_serve = "mlx_parallm.cli:cli_runner"`).
+    *   [ ] **Arguments/Options (to be expanded):**
+        *   [x] `--model-path` (or `--model`): Specifies a model to load at startup. Consider making this repeatable (`--load-model <id_or_path>`) or using a configuration file to specify multiple models for initial loading.
+        *   [x] `--host`: Host to bind the server to (default: `127.0.0.1`).
+        *   [ ] `--port`: Port to bind the server to (default: `8000`).
+        *   [ ] `--workers`: Number of Uvicorn workers (if applicable, consider implications with MLX's own parallelism).
+        *   [ ] `--log-level`: Logging level for the server.
+        *   [ ] `--config-file`: Path to a server configuration file (to override defaults/CLI args).
+        *   [ ] (Future) `--adapter-path`: Path to a LoRA/DoRA adapter to load initially.
+        *   [ ] (Future) `--quantization`: Specify quantization method/bits if loading a quantized model directly.
+    *   [ ] The CLI should parse these arguments and pass them to the server's configuration system.
+    *   [ ] The CLI will programmatically start the Uvicorn server with the FastAPI app (`server.main:app`).
 *   [ ] **README Update:**
-    *   [ ] Update project README with setup, usage, and API documentation.
+    *   [ ] Update project README with setup, usage, API documentation, and CLI usage instructions.
 
 ## XIV. Documentation & Testing
 
