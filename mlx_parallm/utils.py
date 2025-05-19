@@ -14,13 +14,13 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
-from huggingface_hub.utils._errors import RepositoryNotFoundError
+from huggingface_hub.utils import RepositoryNotFoundError
 from mlx.utils import tree_flatten
 from transformers import PreTrainedTokenizer
 
 # mlx_lm
 from mlx_lm.tokenizer_utils import TokenizerWrapper, load_tokenizer
-from mlx_lm.tuner.utils import apply_lora_layers
+from mlx_lm.tuner.utils import load_adapters
 from mlx_lm.tuner.utils import dequantize as dequantize_model
 
 # Local imports
@@ -97,10 +97,11 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
         except RepositoryNotFoundError:
             raise ModelNotFoundError(
                 f"Model not found for path or HF repo: {path_or_hf_repo}.\n"
-                "Please make sure you specified the local path or Hugging Face"
-                " repo id correctly.\nIf you are trying to access a private or"
-                " gated Hugging Face repo, make sure you are authenticated:\n"
-                "https://huggingface.co/docs/huggingface_hub/en/guides/cli#huggingface-cli-login"
+                "Please make sure you specified the local path or Hugging Face repo ID correctly.\n"
+                "If you are trying to access a private or gated Hugging Face repo, ensure that:\n"
+                "  1. You have been granted access to the repository on Hugging Face.\n"
+                "  2. You are authenticated: run \`huggingface-cli login\` or set the HF_TOKEN environment variable.\n"
+                "     (Details: https://huggingface.co/docs/huggingface_hub/en/guides/cli#huggingface-cli-login)"
             ) from None
     return model_path
 
@@ -517,7 +518,7 @@ def load(
             Defaults to an empty dictionary.
         model_config(dict, optional): Configuration parameters specifically for the model.
             Defaults to an empty dictionary.
-        adapter_path (str, optional): Path to the LoRA adapters. If provided, applies LoRA layers
+        adapter_path (str, optional): Path to the LoRA/DoRA adapters. If provided, applies adapter layers
             to the model. Default: ``None``.
         lazy (bool): If False eval the model parameters to make sure they are
             loaded in memory before returning, otherwise they will be loaded
@@ -533,7 +534,7 @@ def load(
 
     model = load_model(model_path, lazy, model_config)
     if adapter_path is not None:
-        model = apply_lora_layers(model, adapter_path)
+        model = load_adapters(model, adapter_path)
         model.eval()
     tokenizer = load_tokenizer(model_path, tokenizer_config)
 

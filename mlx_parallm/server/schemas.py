@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Any
 import time
 
 class ModelPermission(BaseModel):
@@ -43,9 +43,13 @@ class InternalModelRecord(BaseModel):
     status: Literal["loaded", "available_not_loaded", "error_loading", "loading"] = "available_not_loaded"
     created_timestamp: int = Field(default_factory=lambda: int(time.time()))
     owned_by: str = "mlx_parallm"
-    # Placeholder for the actual loaded model and tokenizer
-    # loaded_model_instance: Any = None 
-    # loaded_tokenizer_instance: Any = None
+    
+    # Actual loaded instances (not part of the serialized ModelCard)
+    model_instance: Optional[Any] = None
+    tokenizer_instance: Optional[Any] = None
+
+    class Config:
+        arbitrary_types_allowed = True # Allow complex types like model instances
 
     def to_model_card(self) -> ModelCard:
         return ModelCard(
@@ -60,3 +64,46 @@ class InternalModelRecord(BaseModel):
 # Need to import these for ModelPermission if re-enabled
 # import random
 # import string 
+
+# ---- Completion Schemas ----
+
+class CompletionUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+class CompletionChoice(BaseModel):
+    text: str
+    index: int = 0
+    logprobs: Optional[Any] = None  # Placeholder for now, OpenAI has a specific LogProbs schema
+    finish_reason: Optional[Literal["stop", "length"]] = "stop"
+
+class CompletionResponse(BaseModel):
+    id: str = Field(default_factory=lambda: f"cmpl-{''.join(random.choices(string.ascii_letters + string.digits, k=24))}") # type: ignore
+    object: Literal["text_completion"] = "text_completion"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    model: str # ID of the model used
+    choices: List[CompletionChoice]
+    usage: CompletionUsage
+    # system_fingerprint: Optional[str] = None # For later if needed
+
+class CompletionRequest(BaseModel):
+    model: str = Field(..., description="ID of the model to use for completion.")
+    prompt: str = Field(..., description="The prompt(s) to generate completions for.")
+    max_tokens: int = Field(100, description="The maximum number of tokens to generate.", gt=0)
+    temperature: float = Field(0.0, description="Sampling temperature. 0 means greedy decoding.", ge=0.0, le=2.0)
+    top_p: float = Field(1.0, description="Nucleus sampling parameter.", ge=0.0, le=1.0)
+    # n: int = Field(1, description="How many completions to generate for each prompt.") # Not supported by current utils.generate
+    # stream: bool = Field(False, description="Whether to stream back partial progress.") # For later implementation
+    # logprobs: Optional[int] = Field(None, description="Include the log probabilities on the logprobs most likely tokens.") # For later
+    # stop: Optional[Union[str, List[str]]] = Field(None, description="Up to 4 sequences where the API will stop generating further tokens.") # For later
+    # presence_penalty: float = Field(0.0, ge=-2.0, le=2.0) # For later
+    # frequency_penalty: float = Field(0.0, ge=-2.0, le=2.0) # For later
+    # user: Optional[str] = None # For later
+
+    # TODO: Add more parameters as supported by mlx_parallm.utils.generate_step or mlx_lm.generate
+    # e.g. repetition_penalty, logit_bias
+
+# Need to import these for ModelPermission if re-enabled or CompletionResponse ID generation
+import random
+import string 

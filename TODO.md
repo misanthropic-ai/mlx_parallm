@@ -7,9 +7,9 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
 *   [x] **Set up FastAPI Application:**
     *   [x] Initialize a basic FastAPI project structure.
     *   [x] Add `fastapi` and `uvicorn` to project dependencies (e.g., `requirements.txt` or `pyproject.toml`).
-*   [ ] **Implement Basic Endpoints:**
+*   [x] **Implement Basic Endpoints:**
     *   [x] `/health`: Health check endpoint.
-    *   [ ] `/models`: Endpoint to list available/loaded models.
+    *   [x] `/models` (now `/v1/models`): Endpoint to list available/loaded models.
 *   [ ] **Configuration Management:**
     *   [ ] Implement a system for managing server configurations (e.g., host, port, model paths) using environment variables or a configuration file.
     *   [ ] Configuration should support specifying multiple models (e.g., for startup loading or as a list of discoverable/available models).
@@ -65,11 +65,11 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
 *   [ ] **Tokenizer Management:**
     *   [ ] Ensure tokenizer is loaded alongside the model and used consistently.
 *   [x] **OpenAI-Compatible API Endpoints:**
-    *   [ ] **`/v1/models` Endpoint (OpenAI Compatible):**
-        *   [ ] Implement to list models known to the server.
-        *   [ ] Response format should align with OpenAI's `GET /v1/models`, returning an object with a `data` field containing a list of model objects.
-        *   [ ] Each model object should include fields like `id` (model identifier), `object` (fixed string "model"), `created` (timestamp of loading, if applicable), `owned_by` (e.g., "mlx_parallm", "user"), and potentially custom fields like `status` ("loaded", "available_not_loaded", "error_loading"), `type` (e.g., "causal_lm", "embedding").
-        *   [ ] This endpoint will query the Model Cache/Registry.
+    *   [x] **`/v1/models` Endpoint (OpenAI Compatible):**
+        *   [x] Implement to list models known to the server.
+        *   [x] Response format should align with OpenAI's `GET /v1/models`, returning an object with a `data` field containing a list of model objects.
+        *   [x] Each model object should include fields like `id` (model identifier), `object` (fixed string "model"), `created` (timestamp of loading, if applicable), `owned_by` (e.g., "mlx_parallm", "user"), and potentially custom fields like `status` ("loaded", "available_not_loaded", "error_loading"), `type` (e.g., "causal_lm", "embedding").
+        *   [x] This endpoint will query the Model Cache/Registry (initial version implemented).
     *   [ ] **`/v1/completions` Endpoint:**
         *   [ ] Implement for raw text generation, compatible with OpenAI's completions API.
         *   [ ] Accept parameters: `model`, `prompt`, `max_tokens`, `temperature`, `top_p`, `n`, `stream`, `logprobs`, `stop`, `presence_penalty`, `frequency_penalty`, etc.
@@ -256,7 +256,7 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
     *   [ ] **Arguments/Options (to be expanded):**
         *   [x] `--model-path` (or `--model`): Specifies a model to load at startup. Consider making this repeatable (`--load-model <id_or_path>`) or using a configuration file to specify multiple models for initial loading.
         *   [x] `--host`: Host to bind the server to (default: `127.0.0.1`).
-        *   [ ] `--port`: Port to bind the server to (default: `8000`).
+        *   [x] `--port`: Port to bind the server to (default: `8000`).
         *   [ ] `--workers`: Number of Uvicorn workers (if applicable, consider implications with MLX's own parallelism).
         *   [ ] `--log-level`: Logging level for the server.
         *   [ ] `--config-file`: Path to a server configuration file (to override defaults/CLI args).
@@ -264,8 +264,8 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
         *   [ ] (Future) `--quantization`: Specify quantization method/bits if loading a quantized model directly.
     *   [ ] The CLI should parse these arguments and pass them to the server's configuration system.
     *   [ ] The CLI will programmatically start the Uvicorn server with the FastAPI app (`server.main:app`).
-*   [ ] **README Update:**
-    *   [ ] Update project README with setup, usage, API documentation, and CLI usage instructions.
+*   [x] **README Update:**
+    *   [x] Update project README with setup, usage, API documentation, and CLI usage instructions (initial version created).
 
 ## XIV. Documentation & Testing
 

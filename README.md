@@ -40,6 +40,19 @@ A high-performance, parallelized batch generation server for MLX models, support
     uv pip install -e .
     ```
 
+4.  **Hugging Face Hub Authentication (Important for Gated/Private Models)**:
+    If you plan to load models that are gated or private on the Hugging Face Hub, you need to authenticate. You can do this in one of two ways:
+    *   **Login via CLI (recommended for interactive use):**
+        ```bash
+        huggingface-cli login
+        ```
+    *   **Set Environment Variable:**
+        Set the `HF_TOKEN` environment variable to your Hugging Face access token (with read permissions).
+        ```bash
+        export HF_TOKEN=your_hf_token_here
+        ```
+    Ensure you have also been granted access to the specific model repository on the Hugging Face website.
+
 ## Running the Server
 
 Once installed, you can start the server using the `mlx_parallm_serve` command:
