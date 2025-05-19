@@ -6,29 +6,32 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
 
 *   [x] **Set up FastAPI Application:**
     *   [x] Initialize a basic FastAPI project structure.
-    *   [x] Add `fastapi` and `uvicorn` to project dependencies (e.g., `requirements.txt` or `pyproject.toml`).
+    *   [x] Add `fastapi` and `uvicorn` to project dependencies (e.g., `pyproject.toml`).
 *   [x] **Implement Basic Endpoints:**
     *   [x] `/health`: Health check endpoint.
-    *   [x] `/models` (now `/v1/models`): Endpoint to list available/loaded models.
+    *   [x] `/v1/models`: Endpoint to list available/loaded models. (Initial version done)
+*   [x] **CLI for Server Launch:**
+    *   [x] Implement CLI arguments (`--model-path`, `--host`, `--port`) using `pydantic-cli`.
+    *   [x] Launch Uvicorn server with specified arguments.
 *   [ ] **Configuration Management:**
     *   [ ] Implement a system for managing server configurations (e.g., host, port, model paths) using environment variables or a configuration file.
     *   [ ] Configuration should support specifying multiple models (e.g., for startup loading or as a list of discoverable/available models).
 
 ## II. Model Management & Loading
 
-*   [ ] **Model Loading and Lifecycle Management:**
-    *   [ ] Implement logic to load base Hugging Face models compatible with `mlx_lm`.
-    *   [ ] Allow specification of model path/ID via API or configuration.
-    *   [ ] Design a clear model identifier scheme (e.g., user-provided name, derived from path/ID).
+*   [x] **Model Loading and Lifecycle Management:**
+    *   [x] Implement logic to load base Hugging Face models compatible with `mlx_lm`. (Initial version for single model on startup)
+    *   [x] Allow specification of model path/ID via API or configuration. (Via CLI on startup)
+    *   [x] Design a clear model identifier scheme (e.g., user-provided name, derived from path/ID). (Using path as ID for now)
 *   [ ] **LoRA/DoRA Adapter Management:**
     *   [ ] Implement logic to load LoRA/DoRA adapters and apply them to a base model using `mlx_lm` utilities.
     *   [ ] API endpoint to list available/loaded adapters.
     *   [ ] API endpoint to load/unload adapters dynamically.
     *   [ ] Consider how to handle multiple adapters for the same base model.
 *   [x] **Model Cache/Registry:**
-    *   [ ] Implement a central model registry to store and manage multiple loaded model instances and their metadata.
-    *   [ ] Metadata should include: identifier (ID), path/source, type (e.g., causal_lm, embedding, classifier), status ('loading', 'loaded', 'failed_to_load', 'unloaded', 'available_not_loaded'), quantization details, associated tokenizer/processor, creation/load timestamp.
-    *   [ ] The registry will be the source of truth for the `/v1/models` endpoint and internal model lookups.
+    *   [x] Implement a central model registry to store and manage multiple loaded model instances and their metadata. (Initial in-memory version done)
+    *   [x] Metadata should include: identifier (ID), path/source, type (e.g., causal_lm, embedding, classifier), status (enum: 'LOADING', 'LOADED', 'ERROR_LOADING', 'AVAILABLE_NOT_LOADED'), quantization details, associated tokenizer/processor, creation/load timestamp. (Basic fields and status enum implemented)
+    *   [x] The registry will be the source of truth for the `/v1/models` endpoint and internal model lookups. (Implemented)
 *   [ ] **Embedding Model Loading:**
     *   [ ] Implement logic to load embedding models (e.g., sentence transformers, other models with pooling heads) compatible with MLX.
     *   [ ] Support different pooling strategies if necessary.
@@ -54,37 +57,38 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
         *   [ ] Pad requests within a batch to the same length or handle variable lengths efficiently for text; handle tensor batching for NNs.
     *   [ ] Research and potentially adapt continuous batching techniques (especially for LLMs).
     *   [ ] Optimize for low-latency, especially for RL inference requests.
-*   [ ] **Request Validation:**
-    *   [ ] Implement Pydantic models for API request/response validation.
+*   [x] **Request Validation:**
+    *   [x] Implement Pydantic models for API request/response validation. (Done for implemented endpoints)
 
 ## IV. Generation Engine
 
-*   [ ] **Integrate `mlx_lm` Generation:**
-    *   [ ] Wrap `mlx_lm.generate` or equivalent functions for batched text generation.
-    *   [ ] Ensure efficient handling of tokenization and detokenization for batches.
-*   [ ] **Tokenizer Management:**
-    *   [ ] Ensure tokenizer is loaded alongside the model and used consistently.
+*   [x] **Integrate `mlx_lm` Generation:**
+    *   [x] Wrap `mlx_lm.generate` (via `mlx_parallm.utils.generate`) for text generation. (Single prompt generation integrated)
+    *   [x] Ensure efficient handling of tokenization and detokenization. (Basic handling implemented)
+*   [x] **Tokenizer Management:**
+    *   [x] Ensure tokenizer is loaded alongside the model and used consistently. (Implemented for startup model)
 *   [x] **OpenAI-Compatible API Endpoints:**
     *   [x] **`/v1/models` Endpoint (OpenAI Compatible):**
         *   [x] Implement to list models known to the server.
-        *   [x] Response format should align with OpenAI's `GET /v1/models`, returning an object with a `data` field containing a list of model objects.
-        *   [x] Each model object should include fields like `id` (model identifier), `object` (fixed string "model"), `created` (timestamp of loading, if applicable), `owned_by` (e.g., "mlx_parallm", "user"), and potentially custom fields like `status` ("loaded", "available_not_loaded", "error_loading"), `type` (e.g., "causal_lm", "embedding").
-        *   [x] This endpoint will query the Model Cache/Registry (initial version implemented).
-    *   [ ] **`/v1/completions` Endpoint:**
-        *   [ ] Implement for raw text generation, compatible with OpenAI's completions API.
-        *   [ ] Accept parameters: `model`, `prompt`, `max_tokens`, `temperature`, `top_p`, `n`, `stream`, `logprobs`, `stop`, `presence_penalty`, `frequency_penalty`, etc.
-    *   [ ] **`/v1/chat/completions` Endpoint:**
-        *   [ ] Implement for chat-based generation, compatible with OpenAI's chat completions API.
-        *   [ ] Accept `messages` array with roles (`system`, `user`, `assistant`, `tool`).
-        *   [ ] Implement template processing for standard chat model formats (e.g., applying chat templates).
-        *   [ ] Support `tool_choice` and `tools` parameters for function calling/tool usage.
-        *   [ ] Ensure consistent request/response formats with OpenAI specifications.
+        *   [x] Response format aligns with OpenAI's `GET /v1/models`.
+        *   [x] Model object includes `id`, `object`, `created`, `owned_by`, `status`, `type`.
+        *   [x] Queries the Model Cache/Registry.
+    *   [x] **`/v1/completions` Endpoint:**
+        *   [x] Implement for raw text generation, compatible with OpenAI's completions API. (Initial version done)
+        *   [x] Accept parameters: `model`, `prompt`, `max_tokens`, `temperature`, `top_p`. (Implemented)
+        *   [ ] `n`, `stream`, `logprobs`, `stop`, `presence_penalty`, `frequency_penalty`, etc. (Remaining parameters to be added)
+    *   [x] **`/v1/chat/completions` Endpoint:**
+        *   [x] Implement for chat-based generation, compatible with OpenAI's chat completions API. (Initial version done)
+        *   [x] Accept `messages` array with roles (`system`, `user`, `assistant`).
+        *   [x] Implement template processing using `tokenizer.apply_chat_template`.
+        *   [ ] `tool_choice` and `tools` parameters for function calling/tool usage.
+        *   [x] Ensure consistent request/response formats with OpenAI specifications (for basic fields).
         *   [ ] Support streaming generated tokens back to the client.
         *   [ ] Accept LoRA adapter ID (optional, custom parameter or via model name convention).
-        *   [ ] **`/v1/embeddings` Endpoint:**
-            *   [ ] Implement for generating text embeddings, compatible with OpenAI's embeddings API.
-            *   [ ] Accept parameters: `model`, `input` (string or array of strings/token arrays), `encoding_format`, `dimensions` (for Matryoshka models).
-            *   [ ] Return embedding vectors in the specified format.
+    *   [ ] **`/v1/embeddings` Endpoint:**
+        *   [ ] Implement for generating text embeddings, compatible with OpenAI's embeddings API.
+        *   [ ] Accept parameters: `model`, `input` (string or array of strings/token arrays), `encoding_format`, `dimensions` (for Matryoshka models).
+        *   [ ] Return embedding vectors in the specified format.
 
 ## V. Adapter Weight Updates (for RL Policy Updates)
 
