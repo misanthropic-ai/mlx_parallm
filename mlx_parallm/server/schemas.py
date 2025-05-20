@@ -93,7 +93,7 @@ class CompletionResponse(BaseModel):
     created: int = Field(default_factory=lambda: int(time.time()))
     model: str
     choices: List[CompletionChoice]
-    usage: CompletionUsage
+    usage: Optional[CompletionUsage] = None
 
 class CompletionRequest(BaseModel):
     model: str = Field(..., description="ID of the model to use for completion.")
@@ -101,8 +101,8 @@ class CompletionRequest(BaseModel):
     max_tokens: int = Field(100, description="The maximum number of tokens to generate.", gt=0)
     temperature: float = Field(0.0, description="Sampling temperature. 0 means greedy decoding.", ge=0.0, le=2.0)
     top_p: float = Field(1.0, description="Nucleus sampling parameter.", ge=0.0, le=1.0)
-    # n: int = Field(1, description="How many completions to generate for each prompt.") # Not supported by current utils.generate
-    # stream: bool = Field(False, description="Whether to stream back partial progress.") # For later implementation
+    stream: Optional[bool] = Field(False, description="Whether to stream back partial progress.")
+    n: Optional[int] = Field(1, description="How many completions to generate for each prompt.")
     # logprobs: Optional[int] = Field(None, description="Include the log probabilities on the logprobs most likely tokens.") # For later
     # stop: Optional[Union[str, List[str]]] = Field(None, description="Up to 4 sequences where the API will stop generating further tokens.") # For later
     # presence_penalty: float = Field(0.0, ge=-2.0, le=2.0) # For later

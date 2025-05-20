@@ -257,7 +257,7 @@ def stream_generate(
     if not isinstance(tokenizer, TokenizerWrapper):
         tokenizer = TokenizerWrapper(tokenizer)
 
-    prompt_tokens = mx.array(tokenizer.encode(prompt))
+    prompt_tokens = mx.array(tokenizer.encode(prompt))[None, :]
     detokenizer = tokenizer.detokenizer
 
     detokenizer.reset()
@@ -265,9 +265,12 @@ def stream_generate(
         generate_step(prompt_tokens, model, **kwargs),
         range(max_tokens),
     ):
-        if token == tokenizer.eos_token_id:
+        # token is expected to be mx.array of shape (1,1) because prompt_tokens is (1, seq_len)
+        token_item = token.item() # Get the integer token ID
+
+        if token_item == tokenizer.eos_token_id: # Compare item with eos_token_id
             break
-        detokenizer.add_token(token)
+        detokenizer.add_token(token_item) # Pass the integer token ID
 
         # Yield the last segment if streaming
         yield detokenizer.last_segment

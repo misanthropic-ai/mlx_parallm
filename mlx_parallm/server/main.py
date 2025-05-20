@@ -17,7 +17,8 @@ from mlx_parallm.server.schemas import (
 from mlx_parallm.utils import (
     load as load_model_and_tokenizer_util,
     generate as generate_text_util,
-    batch_stream_generate_text
+    batch_stream_generate_text,
+    stream_generate as stream_generate_text_util
 )
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_parallm.cli import current_server_args # For accessing CLI args like model_path
@@ -101,6 +102,89 @@ async def list_models_endpoint():
 
     return ModelList(data=model_cards)
 
+async def _completion_stream_generator(
+    request: CompletionRequest,
+    model_id: str,
+    model_instance: nn.Module,
+    tokenizer_instance: TokenizerWrapper
+) -> AsyncGenerator[str, None]:
+    """Generates text chunks for streaming completions in SSE format."""
+    
+    request_id = f"cmpl-{uuid.uuid4().hex[:29]}"
+
+    generation_kwargs = {
+        "temp": request.temperature,
+        "top_p": request.top_p,
+        # Add other relevant parameters from CompletionRequest if stream_generate_text_util supports them
+    }
+
+    try:
+        # stream_generate_text_util yields text segments directly
+        for text_delta in stream_generate_text_util(
+            model_instance,
+            tokenizer_instance,
+            request.prompt,
+            max_tokens=request.max_tokens,
+            **generation_kwargs
+        ):
+            if text_delta is not None: # stream_generate can yield empty strings or None, ensure we send valid data
+                choice = CompletionChoice(
+                    text=text_delta,
+                    index=0,
+                    finish_reason=None # Finish reason is sent in the last chunk
+                )
+                # For completions, each stream event is a full CompletionResponse-like object
+                chunk = CompletionResponse(
+                    id=request_id,
+                    object="text_completion", # OpenAI uses "text_completion" for stream chunks too
+                    created=int(time.time()), # New timestamp for each chunk
+                    model=model_id,
+                    choices=[choice],
+                    usage=None # Usage is typically not sent with each chunk, but with the final non-streamed response
+                               # Or as a separate extension if supported. For OpenAI compat, it's not in chunks.
+                )
+                yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+        
+        # After the loop, send a final chunk with finish_reason
+        # The stream_generate function doesn't explicitly return a finish_reason itself.
+        # We have to infer it. If the loop completed without breaking due to EOS (which stream_generate handles internally),
+        # and we reached here, it means max_tokens might have been hit or generation naturally concluded.
+        # For simplicity, let's assume "stop" if loop finishes, or "length" if max_tokens was the constraint.
+        # This part needs refinement based on how stream_generate signals completion type.
+        # Assuming stream_generate stops at EOS or max_tokens.
+        # A more robust way would be to get the actual finish reason from the generation process.
+        # For now, we send a final chunk with a presumptive finish_reason. Let's assume "stop" for now.
+        # The last text_delta might be empty if EOS was the last token.
+
+        # OpenAI typically sends the last chunk with the finish_reason set.
+        # It does not send content in this very last message usually if reason is stop/length.
+        final_choice = CompletionChoice(
+            text="", # Usually empty text in the final chunk with finish_reason
+            index=0,
+            finish_reason="stop" # Default to stop, could be length if max_tokens reached
+                                 # stream_generate should ideally provide this or we count tokens.
+        )
+        final_chunk = CompletionResponse(
+            id=request_id,
+            object="text_completion",
+            created=int(time.time()),
+            model=model_id,
+            choices=[final_choice],
+            usage=None
+        )
+        yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
+
+    except Exception as e:
+        logging.error(f"Error during model generation stream for {request.model}: {e}", exc_info=True)
+        # In a real scenario, you might want to send an error formatted SSE message here
+        # For now, this will break the stream, and the client might see a connection drop or incomplete stream.
+        # Example of error SSE (not fully implemented here):
+        # error_payload = {"error": {"message": str(e), "type": "internal_error", "code": None}}
+        # yield f"data: {json.dumps(error_payload)}\n\n"
+        pass # Let the stream break for now
+    finally:
+        yield f"data: [DONE]\n\n"
+
 @app.post("/v1/completions", response_model=CompletionResponse, tags=["Generation"])
 async def create_completion(request: CompletionRequest):
     """
@@ -113,58 +197,66 @@ async def create_completion(request: CompletionRequest):
     if record.status != ModelStatus.LOADED or not record.model_instance or not record.tokenizer_instance:
         raise HTTPException(status_code=409, detail=f"Model '{request.model}' is not currently loaded or ready.")
 
-    model = record.model_instance
-    tokenizer = record.tokenizer_instance
+    model_instance = record.model_instance
+    # Ensure tokenizer_instance is TokenizerWrapper for stream_generate_text_util
+    if not isinstance(record.tokenizer_instance, TokenizerWrapper):
+        tokenizer_instance = TokenizerWrapper(record.tokenizer_instance)
+    else:
+        tokenizer_instance = record.tokenizer_instance
 
-    try:
-        # Note: mlx_parallm.utils.generate expects temp and top_p in **kwargs
-        # which are then passed to generate_step.
-        # We need to ensure our CompletionRequest fields align or are transformed.
-        # The current utils.generate takes: model, tokenizer, prompt, max_tokens, verbose, formatter, **kwargs
-        # kwargs for generate_step includes: temp, top_p, repetition_penalty, logit_bias
-        
-        generation_kwargs = {
-            "temp": request.temperature,
-            "top_p": request.top_p
-            # Add other supported params like repetition_penalty if added to CompletionRequest
-        }
+    # Add log to inspect request.stream before the conditional block
+    logging.info(f"Inside create_completion for model {request.model}. Parsed stream flag: {request.stream}, type: {type(request.stream)}")
 
-        generated_text = generate_text_util(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=request.prompt,
-            max_tokens=request.max_tokens,
-            **generation_kwargs
+    if request.stream:
+        # TODO: Handle n > 1 for streaming if stream_generate_text_util is adapted for it.
+        if request.n is not None and request.n > 1:
+            raise HTTPException(status_code=400, detail="Streaming with n > 1 is not currently supported for completions.")
+        logging.info(f"Streaming completion request received for model {request.model}. Stream flag: {request.stream}")
+        return StreamingResponse(
+            _completion_stream_generator(request, request.model, model_instance, tokenizer_instance),
+            media_type="text/event-stream"
         )
+    else:
+        # Non-streaming logic (remains largely the same)
+        try:
+            generation_kwargs = {
+                "temp": request.temperature,
+                "top_p": request.top_p
+            }
 
-        # Calculate token counts
-        # Note: TokenizerWrapper might have a direct method, or we use the underlying tokenizer
-        # This assumes tokenizer_instance is TokenizerWrapper and has an encode method for the prompt,
-        # and can also encode the generated text.
-        prompt_tokens = len(tokenizer.encode(request.prompt))
-        completion_tokens = len(tokenizer.encode(generated_text))
-        total_tokens = prompt_tokens + completion_tokens
-
-        choice = CompletionChoice(
-            text=generated_text,
-            index=0,
-            finish_reason="length" if completion_tokens >= request.max_tokens else "stop"
-            # logprobs will be None for now
-        )
-
-        return CompletionResponse(
-            model=request.model,
-            choices=[choice],
-            usage=CompletionUsage(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens
+            generated_text = generate_text_util(
+                model=model_instance,
+                tokenizer=tokenizer_instance,
+                prompt=request.prompt,
+                max_tokens=request.max_tokens,
+                **generation_kwargs
             )
-        )
 
-    except Exception as e:
-        logging.error(f"Error during text generation for model {request.model}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error during text generation: {str(e)}")
+            prompt_tokens = len(tokenizer_instance.encode(request.prompt))
+            completion_tokens = len(tokenizer_instance.encode(generated_text))
+            total_tokens = prompt_tokens + completion_tokens
+
+            # For non-streaming, finish_reason needs to be determined based on completion_tokens vs max_tokens
+            finish_reason_val = "length" if completion_tokens >= request.max_tokens else "stop"
+
+            choice = CompletionChoice(
+                text=generated_text,
+                index=0,
+                finish_reason=finish_reason_val 
+            )
+
+            return CompletionResponse(
+                model=request.model,
+                choices=[choice],
+                usage=CompletionUsage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens
+                )
+            )
+        except Exception as e:
+            logging.error(f"Error during text generation for model {request.model}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Internal server error during text generation: {str(e)}")
 
 async def _chat_completion_stream_generator(
     request: ChatCompletionRequest,
