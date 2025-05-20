@@ -48,15 +48,23 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
 ## III. Request Handling & Batching
 
 *   [ ] **Request Queue:**
-    *   [ ] Implement an asynchronous request queue to manage incoming generation requests.
-    *   [ ] Consider priority queues if RL or other latency-sensitive requests need precedence.
+    *   [ ] Implement an asynchronous request queue (e.g., `asyncio.Queue`) in `server/main.py`.
+    *   [ ] Define a structure for queue items (request data, response future/event, stream queue if applicable).
+    *   [ ] API endpoints (`/v1/completions`, `/v1/chat/completions`) to place requests into this queue and await results.
+    *   [ ] Consider priority queues if RL or other latency-sensitive requests need precedence (future).
+*   [ ] **Batching Worker Task:**
+    *   [ ] Implement a background `asyncio` task that continuously dequeues requests.
+    *   [ ] This task will be responsible for forming batches and invoking model inference.
+    *   [ ] Start this worker task on FastAPI application startup.
 *   [ ] **Dynamic Batching Strategy:**
-    *   [ ] Design and implement a dynamic batching mechanism:
-        *   [ ] Collect requests from the queue.
-        *   [ ] Group requests into batches based on criteria like max batch size, timeout (configurable, potentially shorter for RL).
-        *   [ ] Pad requests within a batch to the same length or handle variable lengths efficiently for text; handle tensor batching for NNs.
-    *   [ ] Research and potentially adapt continuous batching techniques (especially for LLMs).
-    *   [ ] Optimize for low-latency, especially for RL inference requests.
+    *   [ ] Design and implement a dynamic batching mechanism within the worker:
+        *   [ ] Collect requests from the queue (e.g., up to `max_batch_size` or a timeout).
+        *   [ ] **Handle `n` parameter:** If a request has `n > 1`, replicate the prompt/messages `n` times for batch processing. Keep track of these replications to correctly group results.
+        *   [ ] Tokenize and pad all prompts in the batch (including replications) to the same length (left-padding for generation).
+        *   [ ] Call appropriate batched generation utilities from `mlx_parallm.utils` (e.g., a new `batch_generate_text` for non-streaming, `batch_stream_generate_text` for streaming).
+        *   [ ] Distribute results/deltas back to the corresponding original client requests (managing their response futures/events/stream queues).
+    *   [ ] Research and potentially adapt continuous batching techniques (especially for LLMs) (future).
+    *   [ ] Optimize for low-latency, especially for RL inference requests (future).
 *   [x] **Request Validation:**
     *   [x] Implement Pydantic models for API request/response validation. (Done for implemented endpoints)
 
@@ -64,6 +72,9 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
 
 *   [x] **Integrate `mlx_lm` Generation:**
     *   [x] Wrap `mlx_lm.generate` (via `mlx_parallm.utils.generate`) for text generation. (Single prompt generation integrated)
+    *   [x] Wrap `mlx_lm.stream_generate` (via `mlx_parallm.utils.stream_generate`) for single prompt streaming. (Integrated)
+    *   [ ] Implement/Refine `mlx_parallm.utils.batch_generate_text` for batched non-streaming generation supporting the `n` parameter.
+    *   [x] Implement `mlx_parallm.utils.batch_stream_generate_text` for batched streaming generation. (Initial version for `n=1` per sequence in batch done, needs to correctly support `n` choices per original prompt in the stream output formatting).
     *   [x] Ensure efficient handling of tokenization and detokenization. (Basic handling implemented)
 *   [x] **Tokenizer Management:**
     *   [x] Ensure tokenizer is loaded alongside the model and used consistently. (Implemented for startup model)
@@ -74,16 +85,18 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
         *   [x] Model object includes `id`, `object`, `created`, `owned_by`, `status`, `type`.
         *   [x] Queries the Model Cache/Registry.
     *   [x] **`/v1/completions` Endpoint:**
-        *   [x] Implement for raw text generation, compatible with OpenAI's completions API. (Initial version done)
-        *   [x] Accept parameters: `model`, `prompt`, `max_tokens`, `temperature`, `top_p`. (Implemented)
-        *   [ ] `n`, `stream`, `logprobs`, `stop`, `presence_penalty`, `frequency_penalty`, etc. (Remaining parameters to be added)
+        *   [x] Implement for raw text generation, compatible with OpenAI's completions API. (Initial version done, streaming added)
+        *   [x] Accept parameters: `model`, `prompt`, `max_tokens`, `temperature`, `top_p`, `stream`, `n`. (Implemented)
+        *   [ ] Fully support `n > 1` completions (requires batching worker integration for non-streaming and correct SSE formatting for streaming `n` choices).
+        *   [ ] `logprobs`, `stop`, `presence_penalty`, `frequency_penalty`, etc. (Remaining parameters to be added)
     *   [x] **`/v1/chat/completions` Endpoint:**
-        *   [x] Implement for chat-based generation, compatible with OpenAI's chat completions API. (Initial version done)
+        *   [x] Implement for chat-based generation, compatible with OpenAI's chat completions API. (Initial version done, streaming added)
         *   [x] Accept `messages` array with roles (`system`, `user`, `assistant`).
+        *   [x] Accept `model`, `max_tokens`, `temperature`, `top_p`, `stream`, `n`. (Implemented)
         *   [x] Implement template processing using `tokenizer.apply_chat_template`.
+        *   [ ] Fully support `n > 1` completions (requires batching worker integration for non-streaming and correct SSE formatting for streaming `n` choices).
         *   [ ] `tool_choice` and `tools` parameters for function calling/tool usage.
-        *   [x] Ensure consistent request/response formats with OpenAI specifications (for basic fields).
-        *   [ ] Support streaming generated tokens back to the client.
+        *   [x] Ensure consistent request/response formats with OpenAI specifications (for basic fields and streaming structure).
         *   [ ] Accept LoRA adapter ID (optional, custom parameter or via model name convention).
     *   [ ] **`/v1/embeddings` Endpoint:**
         *   [ ] Implement for generating text embeddings, compatible with OpenAI's embeddings API.
