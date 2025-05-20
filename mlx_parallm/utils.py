@@ -882,8 +882,8 @@ import asyncio
 from functools import partial
 
 async def batch_generate_text(
-    model: Any,  # Should be mx.nn.Module with a generate method
-    tokenizer: TokenizerWrapper, # Changed from PreTrainedTokenizerBase
+    model: nn.Module,  # Changed type hint to nn.Module
+    tokenizer: TokenizerWrapper,
     prompts: List[str],
     max_tokens: int = 100,
     temp: float = 0.7,
@@ -891,11 +891,11 @@ async def batch_generate_text(
     # repetition_penalty: float = 1.0, # Add if support is needed later
 ) -> List[Tuple[str, int, int]]:
     """
-    Generates text for a batch of prompts.
+    Generates text for a batch of prompts using generate_step for iterative generation.
 
     Args:
-        model: The MLX language model.
-        tokenizer: The tokenizer.
+        model: The MLX language model (mlx.nn.Module).
+        tokenizer: The tokenizer wrapper.
         prompts: A list of prompt strings.
         max_tokens: The maximum number of new tokens to generate per prompt.
         temp: The temperature for sampling.
@@ -909,8 +909,7 @@ async def batch_generate_text(
 
     loop = asyncio.get_running_loop()
 
-    # Ensure tokenizer has a pad_token_id, crucial for batching.
-    # Accessing _tokenizer for pad_token_id and padding_side as 'tokenizer' is TokenizerWrapper
+    # --- Tokenization (same as before) ---
     if tokenizer._tokenizer.pad_token_id is None:
         if tokenizer._tokenizer.eos_token_id is not None:
             tokenizer._tokenizer.pad_token_id = tokenizer._tokenizer.eos_token_id
@@ -918,69 +917,136 @@ async def batch_generate_text(
                 f"tokenizer._tokenizer.pad_token_id was None. Set to eos_token_id: {tokenizer._tokenizer.eos_token_id}"
             )
         else:
-            # This case should be rare if eos_token_id is usually present
             logging.error(
                 "tokenizer._tokenizer.pad_token_id is None and eos_token_id is also None. "
                 "Batching requires a pad_token_id. Attempting to use 0 for underlying tokenizer, but this may fail."
             )
-            tokenizer._tokenizer.pad_token_id = 0 # Fallback for the underlying tokenizer
+            tokenizer._tokenizer.pad_token_id = 0
 
     original_padding_side = tokenizer._tokenizer.padding_side
-    tokenizer._tokenizer.padding_side = "left"  # Essential for decoder-only models
+    tokenizer._tokenizer.padding_side = "left"
+
+    tokenizer_configured_max_length = getattr(tokenizer._tokenizer, 'model_max_length', None)
+    effective_max_length = 2048
+    if tokenizer_configured_max_length is not None:
+        try:
+            candidate_max_length = int(tokenizer_configured_max_length)
+            if candidate_max_length > 0:
+                effective_max_length = candidate_max_length
+                logging.info(f"Using tokenizer's model_max_length: {effective_max_length}")
+            else:
+                effective_max_length = 2048
+                logging.warning(
+                    f"Tokenizer's model_max_length ({tokenizer_configured_max_length}) is not positive. Using default {effective_max_length}."
+                )
+        except (ValueError, TypeError):
+            effective_max_length = 2048
+            logging.warning(
+                f"Tokenizer's model_max_length ('{tokenizer_configured_max_length}') is not a valid integer. Using default {effective_max_length}."
+            )
+    else:
+        effective_max_length = 2048
+        logging.info(
+            f"Tokenizer's model_max_length not found or is None. Using default {effective_max_length}."
+        )
+    MAX_SUPPORTED_TOKENIZER_LENGTH = 65536
+    if effective_max_length > MAX_SUPPORTED_TOKENIZER_LENGTH:
+        logging.warning(
+            f"Effective max_length {effective_max_length} exceeds safety cap of {MAX_SUPPORTED_TOKENIZER_LENGTH}. Capping to {MAX_SUPPORTED_TOKENIZER_LENGTH}."
+        )
+        effective_max_length = MAX_SUPPORTED_TOKENIZER_LENGTH
+    logging.info(f"Final effective_max_length for tokenizer: {effective_max_length}")
 
     try:
-        # TokenizerWrapper's __call__ method typically handles calling the underlying tokenizer correctly.
-        tokenized_batch = tokenizer(
+        tokenized_batch = tokenizer._tokenizer(
             prompts,
             return_tensors="np",
-            padding="longest", # This should be handled by the underlying tokenizer's __call__
+            padding="longest",
             truncation=True,
-            max_length=getattr(tokenizer._tokenizer, 'model_max_length', 2048) # Access on underlying tokenizer
+            max_length=effective_max_length
         )
     finally:
-        tokenizer._tokenizer.padding_side = original_padding_side # Restore original padding side for underlying tokenizer
+        tokenizer._tokenizer.padding_side = original_padding_side
 
     prompt_tokens_np = tokenized_batch["input_ids"].astype(np.int64)
     attention_mask_np = tokenized_batch["attention_mask"]
-
-    # Calculate actual number of tokens for each prompt (excluding padding)
     num_prompt_tokens_list = [int(np.sum(mask)) for mask in attention_mask_np]
+    initial_prompt_tokens_mx = mx.array(prompt_tokens_np)
+    # --- End Tokenization ---
 
-    prompt_tokens = mx.array(prompt_tokens_np)
+    # Define the synchronous generation part to be run in executor
+    def _synchronous_generation():
+        batch_size = initial_prompt_tokens_mx.shape[0]
+        all_completed_sequences = [[] for _ in range(batch_size)]
+        active_sequences = [True] * batch_size
+        generated_token_counts_for_sequence = [0] * batch_size
+        eos_token_id = tokenizer.eos_token_id # Assuming TokenizerWrapper provides this via __getattr__
 
-    # Run the synchronous model.generate in a thread pool executor
-    generate_func = partial(
-        model.generate,
-        inputs=prompt_tokens,
-        max_new_tokens=max_tokens,
-        temp=temp,
-        # If your model.generate supports attention_mask, pass mx.array(attention_mask_np)
-        # The mlx_lm.models.base.GenerationMixin.generate does not explicitly take it,
-        # but relies on KVCache and correct input padding.
-    )
-    
-    generated_tokens_batch_including_prompt = await loop.run_in_executor(None, generate_func)
-    mx.eval(generated_tokens_batch_including_prompt) # Ensure MLX computation completes
+        # Ensure eos_token_id is a single ID for comparison, not a set
+        if isinstance(eos_token_id, set):
+            if len(eos_token_id) == 1:
+                eos_token_id = list(eos_token_id)[0]
+            else:
+                # Handle cases with multiple EOS tokens if necessary, for now, take the first or error
+                logging.warning(f"Multiple EOS tokens found: {eos_token_id}. Using the first one for generation stop.")
+                eos_token_id = list(eos_token_id)[0] if eos_token_id else None # Or handle error appropriately
 
-    results = []
-    prompt_padded_len = prompt_tokens.shape[1]
-
-    for i in range(generated_tokens_batch_including_prompt.shape[0]):
-        full_generated_sequence = generated_tokens_batch_including_prompt[i].tolist()
+        current_tokens_for_step = initial_prompt_tokens_mx
         
-        # Extract only the newly generated tokens
-        # model.generate returns the full sequence (prompt + new tokens)
-        completion_tokens_only = full_generated_sequence[prompt_padded_len:]
+        # KVCache needs to be managed per call to generate_step if model is stateless, 
+        # or it's managed internally by generate_step if it's stateful across yields.
+        # The generate_step in this utils.py seems to create its own cache internally for its loop.
+        # We are mimicking the loop of generate_step but for a fixed number of max_tokens.
 
-        # Decode the generated part
-        decoded_text = tokenizer.decode(completion_tokens_only, skip_special_tokens=True)
+        # The generate_step function as defined in this file is a generator itself.
+        # We need to iterate over it, max_tokens times.
+        # output_collector = [[] for _ in range(batch_size)]
 
-        num_completion_toks = len(completion_tokens_only)
-        current_prompt_actual_tokens = num_prompt_tokens_list[i]
+        generated_tokens_per_prompt = [[] for _ in range(batch_size)]
 
-        results.append((decoded_text, current_prompt_actual_tokens, num_completion_toks))
+        # We need to adapt the generate_step logic or use it as is.
+        # The current generate_step is designed to yield one token across batch *per step*.
+        # Let's use the existing generate_step directly.
+        
+        # `generate_step` args. For batch, `repetition_penalty` needs careful handling if enabled.
+        gen_step_kwargs = {"temp": temp} # Add top_p etc. if needed
+        
+        # This loop iterates `max_tokens` times. In each iteration, `generate_step` yields one new token for each active sequence.
+        for step_num, (batch_next_token_ids, _) in enumerate(generate_step(initial_prompt_tokens_mx, model, **gen_step_kwargs)):
+            if step_num >= max_tokens: # Overall max_tokens for new generation
+                break
 
-    return results
+            any_sequence_active_this_step = False
+            for i in range(batch_size):
+                if not active_sequences[i]:
+                    continue
+                
+                any_sequence_active_this_step = True
+                token_id = batch_next_token_ids[i, 0].item() # batch_next_token_ids is (batch_size, 1)
+
+                if token_id == eos_token_id or generated_token_counts_for_sequence[i] >= max_tokens:
+                    active_sequences[i] = False
+                    # Do not add EOS or token that hits max_tokens to the generated list itself unless desired
+                else:
+                    generated_tokens_per_prompt[i].append(token_id)
+                    generated_token_counts_for_sequence[i] += 1
+            
+            if not any_sequence_active_this_step:
+                break # All sequences have finished
+        
+        # Now, decode results
+        final_results = []
+        for i in range(batch_size):
+            decoded_text = tokenizer.decode(generated_tokens_per_prompt[i], skip_special_tokens=True)
+            num_completion_toks = len(generated_tokens_per_prompt[i])
+            current_prompt_actual_tokens = num_prompt_tokens_list[i]
+            final_results.append((decoded_text, current_prompt_actual_tokens, num_completion_toks))
+        
+        return final_results
+
+    # Run the synchronous generation logic in a thread pool executor
+    generation_results = await loop.run_in_executor(None, _synchronous_generation)
+    return generation_results
 
 # Alias for consistency if used elsewhere, though batch_generate_text is more descriptive
 batch_generate_text_util = batch_generate_text
