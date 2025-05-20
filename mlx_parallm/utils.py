@@ -16,7 +16,7 @@ import mlx.nn as nn
 from huggingface_hub import snapshot_download
 from huggingface_hub.utils import RepositoryNotFoundError
 from mlx.utils import tree_flatten
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase
 
 # mlx_lm
 from mlx_lm.tokenizer_utils import TokenizerWrapper, load_tokenizer
@@ -876,3 +876,111 @@ def batch_stream_generate_text(
     # they should be finalized and marked with "length".
     # This is implicitly handled if generated_tokens_counts[i] >= max_tokens leads to finish_reason = "length".
     # No further explicit yield should be needed here if the loop correctly finalizes.
+
+import numpy as np
+import asyncio
+from functools import partial
+
+async def batch_generate_text(
+    model: Any,  # Should be mx.nn.Module with a generate method
+    tokenizer: TokenizerWrapper, # Changed from PreTrainedTokenizerBase
+    prompts: List[str],
+    max_tokens: int = 100,
+    temp: float = 0.7,
+    # top_p: float = 1.0, # Add if support is needed later
+    # repetition_penalty: float = 1.0, # Add if support is needed later
+) -> List[Tuple[str, int, int]]:
+    """
+    Generates text for a batch of prompts.
+
+    Args:
+        model: The MLX language model.
+        tokenizer: The tokenizer.
+        prompts: A list of prompt strings.
+        max_tokens: The maximum number of new tokens to generate per prompt.
+        temp: The temperature for sampling.
+
+    Returns:
+        A list of tuples, where each tuple contains:
+        (generated_text_for_that_prompt, num_prompt_tokens, num_completion_tokens).
+    """
+    if not prompts:
+        return []
+
+    loop = asyncio.get_running_loop()
+
+    # Ensure tokenizer has a pad_token_id, crucial for batching.
+    # Accessing _tokenizer for pad_token_id and padding_side as 'tokenizer' is TokenizerWrapper
+    if tokenizer._tokenizer.pad_token_id is None:
+        if tokenizer._tokenizer.eos_token_id is not None:
+            tokenizer._tokenizer.pad_token_id = tokenizer._tokenizer.eos_token_id
+            logging.warning(
+                f"tokenizer._tokenizer.pad_token_id was None. Set to eos_token_id: {tokenizer._tokenizer.eos_token_id}"
+            )
+        else:
+            # This case should be rare if eos_token_id is usually present
+            logging.error(
+                "tokenizer._tokenizer.pad_token_id is None and eos_token_id is also None. "
+                "Batching requires a pad_token_id. Attempting to use 0 for underlying tokenizer, but this may fail."
+            )
+            tokenizer._tokenizer.pad_token_id = 0 # Fallback for the underlying tokenizer
+
+    original_padding_side = tokenizer._tokenizer.padding_side
+    tokenizer._tokenizer.padding_side = "left"  # Essential for decoder-only models
+
+    try:
+        # TokenizerWrapper's __call__ method typically handles calling the underlying tokenizer correctly.
+        tokenized_batch = tokenizer(
+            prompts,
+            return_tensors="np",
+            padding="longest", # This should be handled by the underlying tokenizer's __call__
+            truncation=True,
+            max_length=getattr(tokenizer._tokenizer, 'model_max_length', 2048) # Access on underlying tokenizer
+        )
+    finally:
+        tokenizer._tokenizer.padding_side = original_padding_side # Restore original padding side for underlying tokenizer
+
+    prompt_tokens_np = tokenized_batch["input_ids"].astype(np.int64)
+    attention_mask_np = tokenized_batch["attention_mask"]
+
+    # Calculate actual number of tokens for each prompt (excluding padding)
+    num_prompt_tokens_list = [int(np.sum(mask)) for mask in attention_mask_np]
+
+    prompt_tokens = mx.array(prompt_tokens_np)
+
+    # Run the synchronous model.generate in a thread pool executor
+    generate_func = partial(
+        model.generate,
+        inputs=prompt_tokens,
+        max_new_tokens=max_tokens,
+        temp=temp,
+        # If your model.generate supports attention_mask, pass mx.array(attention_mask_np)
+        # The mlx_lm.models.base.GenerationMixin.generate does not explicitly take it,
+        # but relies on KVCache and correct input padding.
+    )
+    
+    generated_tokens_batch_including_prompt = await loop.run_in_executor(None, generate_func)
+    mx.eval(generated_tokens_batch_including_prompt) # Ensure MLX computation completes
+
+    results = []
+    prompt_padded_len = prompt_tokens.shape[1]
+
+    for i in range(generated_tokens_batch_including_prompt.shape[0]):
+        full_generated_sequence = generated_tokens_batch_including_prompt[i].tolist()
+        
+        # Extract only the newly generated tokens
+        # model.generate returns the full sequence (prompt + new tokens)
+        completion_tokens_only = full_generated_sequence[prompt_padded_len:]
+
+        # Decode the generated part
+        decoded_text = tokenizer.decode(completion_tokens_only, skip_special_tokens=True)
+
+        num_completion_toks = len(completion_tokens_only)
+        current_prompt_actual_tokens = num_prompt_tokens_list[i]
+
+        results.append((decoded_text, current_prompt_actual_tokens, num_completion_toks))
+
+    return results
+
+# Alias for consistency if used elsewhere, though batch_generate_text is more descriptive
+batch_generate_text_util = batch_generate_text

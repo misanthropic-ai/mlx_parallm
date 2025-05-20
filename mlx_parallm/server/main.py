@@ -1,12 +1,15 @@
 from fastapi import FastAPI, HTTPException, Depends
 from starlette.responses import StreamingResponse
-from typing import Dict, List, Any, AsyncGenerator, Tuple, Optional
+from typing import Dict, List, Any, AsyncGenerator, Tuple, Optional, Union
 import logging
 import os
 import time
 import uuid
 import mlx.core as mx
 import mlx.nn as nn
+import asyncio
+from asyncio import Future
+import json
 
 from mlx_parallm.server.schemas import (
     ModelList, InternalModelRecord, ModelCard, ModelStatus,
@@ -18,7 +21,8 @@ from mlx_parallm.utils import (
     load as load_model_and_tokenizer_util,
     generate as generate_text_util,
     batch_stream_generate_text,
-    stream_generate as stream_generate_text_util
+    stream_generate as stream_generate_text_util,
+    batch_generate_text as batch_generate_text_util
 )
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_parallm.cli import current_server_args # For accessing CLI args like model_path
@@ -40,6 +44,22 @@ app = FastAPI(
 # Simple in-memory model registry
 # Key: model_id (str), Value: InternalModelRecord
 model_registry: Dict[str, InternalModelRecord] = {}
+
+# Request Queue and Batching Configuration
+REQUEST_QUEUE: asyncio.Queue = asyncio.Queue()
+MAX_BATCH_SIZE = 8  # Default value, can be made configurable later
+BATCH_TIMEOUT = 0.1 # Seconds, default value, can be made configurable later
+REQUEST_TIMEOUT_SECONDS = 60.0 # Default request timeout
+
+class QueuedRequest:
+    future: Future
+    request_data: Union[CompletionRequest, ChatCompletionRequest]
+    # request_id: str # Optional: for better tracking/logging
+
+    def __init__(self, request_data: Union[CompletionRequest, ChatCompletionRequest]):
+        self.future = Future()
+        self.request_data = request_data
+        # self.request_id = f"req_{uuid.uuid4().hex}"
 
 @app.on_event("startup")
 async def startup_event():
@@ -76,6 +96,10 @@ async def startup_event():
         logging.info(f"Model {model_id_cli} registered with status: {record.status.value}")
     else:
         logging.warning("No initial model path found in server arguments. Model registry will be empty at startup.")
+
+    # Start the batch processing worker
+    asyncio.create_task(batch_processing_worker())
+    logging.info("Batch processing worker task created.")
 
 @app.get("/health", tags=["General"])
 async def health_check():
@@ -452,3 +476,282 @@ async def create_chat_completion(request: ChatCompletionRequest):
         )
 
 # Further endpoints and application logic will be added here. 
+
+# --- Batch Processing Worker ---
+async def batch_processing_worker():
+    global model_registry
+    logging.info(f"Batch processing worker starting. MAX_BATCH_SIZE={MAX_BATCH_SIZE}, BATCH_TIMEOUT={BATCH_TIMEOUT}s")
+
+    # This worker relies on the model being loaded by the startup event.
+    # It will fetch the model details once it starts its processing loop or if the model_id changes.
+    model = None
+    tokenizer = None
+    model_id_from_args = current_server_args.model_path # Get the configured model path
+
+    # Try to get model/tokenizer initially. If not available, will try again in loop.
+    model_record_initial = model_registry.get(model_id_from_args)
+    if model_record_initial and model_record_initial.model_instance and model_record_initial.tokenizer_instance:
+        model = model_record_initial.model_instance
+        tokenizer = model_record_initial.tokenizer_instance
+        logging.info(f"Batch worker successfully retrieved model '{model_id_from_args}'.")
+    else:
+        logging.warning(f"Model '{model_id_from_args}' not immediately available in registry for batch worker. Will retry.")
+
+
+    while True:
+        if not model or not tokenizer: # Periodically check if model got loaded
+            model_record_check = model_registry.get(model_id_from_args)
+            if model_record_check and model_record_check.model_instance and model_record_check.tokenizer_instance:
+                model = model_record_check.model_instance
+                tokenizer = model_record_check.tokenizer_instance
+                logging.info(f"Batch worker successfully retrieved model '{model_id_from_args}' after delay.")
+            else:
+                logging.debug("Batch worker: Model still not available. Waiting...")
+                await asyncio.sleep(1) # Wait a bit before retrying
+                continue # Skip to next iteration to re-check for model
+
+        batch_to_process: List[QueuedRequest] = []
+        first_request_received_time = None
+
+        try:
+            # Wait for the first request
+            try:
+                if not batch_to_process: # Only wait if batch is empty
+                    queued_item = await asyncio.wait_for(REQUEST_QUEUE.get(), timeout=BATCH_TIMEOUT)
+                    batch_to_process.append(queued_item)
+                    REQUEST_QUEUE.task_done() # Mark as processed from queue perspective
+                    first_request_received_time = asyncio.get_event_loop().time()
+            except asyncio.TimeoutError:
+                # This timeout means no request arrived to start a batch.
+                # Continue to the start of the loop to re-check for model and then wait again.
+                continue
+
+            # Try to gather more requests for the batch if the first one was received
+            if first_request_received_time:
+                while len(batch_to_process) < MAX_BATCH_SIZE:
+                    elapsed_time = asyncio.get_event_loop().time() - first_request_received_time
+                    remaining_time_for_batch_window = BATCH_TIMEOUT - elapsed_time
+                    
+                    if remaining_time_for_batch_window <= 0:
+                        break # Batch window timeout reached
+
+                    try:
+                        # Poll queue with a very short timeout to see if more items are immediately available
+                        # or up to remaining_time_for_batch_window
+                        queued_item = await asyncio.wait_for(REQUEST_QUEUE.get(), timeout=min(0.001, remaining_time_for_batch_window))
+                        batch_to_process.append(queued_item)
+                        REQUEST_QUEUE.task_done()
+                    except asyncio.TimeoutError:
+                        break # No more items arrived within the short poll or window ended
+                    except asyncio.QueueEmpty: # Should be caught by TimeoutError with wait_for
+                        break
+
+
+            if not batch_to_process:
+                continue # Should not happen if logic above is correct, but as a safeguard
+
+            logging.info(f"Processing batch of {len(batch_to_process)} requests.")
+
+            prompts_for_batch: List[str] = []
+            request_types_in_batch: List[str] = [] # "completion" or "chat_completion"
+            # Store original request objects to correctly form responses later
+            original_requests_in_batch: List[QueuedRequest] = list(batch_to_process)
+
+
+            # --- Parameter Consolidation (Simplified for Step A) ---
+            # Use parameters from the first request in the batch.
+            # This is a simplification; future steps might need more sophisticated handling.
+            first_req_data = batch_to_process[0].request_data
+            
+            # Common defaults, overridden by first request if present
+            max_tokens = 100 
+            temp = 0.7
+
+            if isinstance(first_req_data, CompletionRequest):
+                max_tokens = first_req_data.max_tokens if first_req_data.max_tokens is not None else max_tokens
+                temp = first_req_data.temperature if first_req_data.temperature is not None else temp
+            elif isinstance(first_req_data, ChatCompletionRequest):
+                max_tokens = first_req_data.max_tokens if first_req_data.max_tokens is not None else max_tokens
+                temp = first_req_data.temperature if first_req_data.temperature is not None else temp
+            # Add other parameters like top_p, etc., if they become part of batching strategy
+
+
+            for qr_idx, qr in enumerate(original_requests_in_batch):
+                try:
+                    if isinstance(qr.request_data, CompletionRequest):
+                        prompts_for_batch.append(qr.request_data.prompt)
+                        request_types_in_batch.append("completion")
+                    elif isinstance(qr.request_data, ChatCompletionRequest):
+                        chat_history = [msg.model_dump() for msg in qr.request_data.messages]
+                        prompt_text = tokenizer.apply_chat_template(
+                            chat_history,
+                            tokenize=False,
+                            add_generation_prompt=True
+                        )
+                        prompts_for_batch.append(prompt_text)
+                        request_types_in_batch.append("chat_completion")
+                    else:
+                        logging.error(f"Unknown request type in batch: {type(qr.request_data)}")
+                        # This request cannot be processed. Set an exception on its future.
+                        if not qr.future.done():
+                             qr.future.set_exception(TypeError(f"Unsupported request data type: {type(qr.request_data)}"))
+                        # Remove from current processing (or mark as failed to skip generation for it)
+                        # For simplicity, we'll rely on prompts_for_batch and request_types_in_batch
+                        # being shorter than original_requests_in_batch if a request fails here.
+                        # This part needs careful handling to ensure indices align later or filter out failed ones.
+                        # Let's adjust: if a prompt fails, we skip adding it and its type.
+                        # The loop below that sets results will iterate over `original_requests_in_batch`
+                        # but only process those for which we got results.
+                        # A better way is to pre-filter `original_requests_in_batch` if some prompts fail.
+                        # For now, let's assume all prompts are successfully prepared or handle errors individually.
+                except Exception as e:
+                    logging.error(f"Error preparing prompt for request in batch: {e}", exc_info=True)
+                    if not qr.future.done():
+                        qr.future.set_exception(e)
+                    # Mark this request as failed to prevent it from going to batch_generate_text
+                    # A placeholder value or removing it from a temporary list would be needed.
+                    # For now, we'll let it be, and if prompts_for_batch is shorter, the zip will handle it.
+                    # This logic needs to be more robust.
+                    # Let's make sure that if a prompt fails, we don't process it.
+                    # We can create a filtered list of (QueuedRequest, prompt_text, request_type)
+            
+            # Filter out requests that failed prompt preparation before sending to batch_generate_text
+            valid_requests_for_generation = [] # List of (QueuedRequest, prompt_text, request_type)
+            temp_prompts = []
+            temp_req_types = []
+            temp_original_reqs = []
+
+            for qr in batch_to_process: # Iterate over the initial batch
+                prompt_text_for_req = None
+                req_type_for_req = None
+                try:
+                    if isinstance(qr.request_data, CompletionRequest):
+                        prompt_text_for_req = qr.request_data.prompt
+                        req_type_for_req = "completion"
+                    elif isinstance(qr.request_data, ChatCompletionRequest):
+                        chat_history = [msg.model_dump() for msg in qr.request_data.messages]
+                        prompt_text_for_req = tokenizer.apply_chat_template(
+                            chat_history, tokenize=False, add_generation_prompt=True
+                        )
+                        req_type_for_req = "chat_completion"
+                    else:
+                        raise TypeError(f"Unsupported request data type: {type(qr.request_data)}")
+                    
+                    if prompt_text_for_req is not None and req_type_for_req is not None:
+                        valid_requests_for_generation.append((qr, prompt_text_for_req, req_type_for_req))
+                        temp_prompts.append(prompt_text_for_req)
+                        temp_req_types.append(req_type_for_req)
+                        temp_original_reqs.append(qr)
+
+                except Exception as e:
+                    logging.error(f"Failed to prepare prompt for {qr.request_data}: {e}", exc_info=True)
+                    if not qr.future.done():
+                        qr.future.set_exception(e)
+            
+            prompts_for_batch = temp_prompts
+            request_types_in_batch = temp_req_types
+            original_requests_in_batch = temp_original_reqs # These are the ones we will attempt to generate for
+
+
+            if not prompts_for_batch: # If all requests in the fetched batch failed preparation
+                logging.warning("No valid prompts to process in the current batch after preparation.")
+                continue # Go to the next iteration of the main while loop
+
+            try:
+                # Call the batch_generate_text utility
+                # batch_generate_text_util is async
+                generated_results_batch: List[Tuple[str, int, int]] = await batch_generate_text_util(
+                    model=model,
+                    tokenizer=tokenizer,
+                    prompts=prompts_for_batch,
+                    max_tokens=max_tokens,
+                    temp=temp,
+                )
+
+                # Distribute results
+                # Ensure generated_results_batch aligns with original_requests_in_batch (which are the successfully prepared ones)
+                if len(generated_results_batch) != len(original_requests_in_batch):
+                    logging.error(f"Mismatch in batch results: expected {len(original_requests_in_batch)}, got {len(generated_results_batch)}")
+                    # Set error for all requests in this sub-batch as something went wrong with generation
+                    for qr_error in original_requests_in_batch:
+                        if not qr_error.future.done():
+                            qr_error.future.set_exception(RuntimeError("Batch generation returned unexpected number of results."))
+                    continue # Move to next batch cycle
+
+                current_time = int(time.time())
+                model_name_for_response = current_server_args.model_path or "unknown_model"
+
+
+                for i, qr in enumerate(original_requests_in_batch):
+                    if qr.future.done(): # If future was already set (e.g. by an earlier error)
+                        continue
+
+                    text_result, num_prompt_toks, num_compl_toks = generated_results_batch[i]
+                    request_type = request_types_in_batch[i] # Corresponds to original_requests_in_batch
+
+                    usage = CompletionUsage(
+                        prompt_tokens=num_prompt_toks,
+                        completion_tokens=num_compl_toks,
+                        total_tokens=num_prompt_toks + num_compl_toks,
+                    )
+
+                    if request_type == "completion":
+                        choice = CompletionChoice(
+                            index=0, # n=1 for Step A
+                            text=text_result,
+                            logprobs=None, # Not supported in Step A
+                            finish_reason="stop", # Or "length" if max_tokens hit (TODO: get from batch_generate)
+                        )
+                        response = CompletionResponse(
+                            id=f"cmpl-{uuid.uuid4().hex}",
+                            object="text_completion",
+                            created=current_time,
+                            model=model_name_for_response,
+                            choices=[choice],
+                            usage=usage,
+                        )
+                        qr.future.set_result(response)
+                    elif request_type == "chat_completion":
+                        chat_message = ChatMessage(role="assistant", content=text_result)
+                        choice = ChatCompletionChoice(
+                            index=0, # n=1 for Step A
+                            message=chat_message,
+                            finish_reason="stop", # Or "length" (TODO)
+                        )
+                        response = ChatCompletionResponse(
+                            id=f"chatcmpl-{uuid.uuid4().hex}",
+                            object="chat.completion",
+                            created=current_time,
+                            model=model_name_for_response,
+                            choices=[choice],
+                            usage=usage,
+                        )
+                        qr.future.set_result(response)
+                    else: # Should not happen due to prior checks
+                        logging.error(f"Unknown request type '{request_type}' during response construction for batch.")
+                        if not qr.future.done():
+                            qr.future.set_exception(ValueError(f"Internal error: Unhandled request type '{request_type}'"))
+            
+            except Exception as e:
+                logging.error(f"Error during batch generation or result distribution: {e}", exc_info=True)
+                for qr_err in original_requests_in_batch: # These are the ones attempted for generation
+                    if not qr_err.future.done():
+                        qr_err.future.set_exception(e) # Propagate the error
+
+        except Exception as e:
+            logging.error(f"Outer error in batch_processing_worker loop: {e}", exc_info=True)
+            # Set error for any requests that might have been pulled but not processed
+            for qr_fail in batch_to_process:
+                if not qr_fail.future.done():
+                    qr_fail.future.set_exception(e)
+            # Add a small delay before restarting the loop to prevent rapid failing loops
+            await asyncio.sleep(0.5)
+
+# For debugging or direct execution, if needed (uvicorn main:app --reload)
+# if __name__ == "__main__":
+#     # This part is typically handled by uvicorn or a similar ASGI server runner.
+#     # Not standard to include in the app file itself for production.
+#     # For local testing, ensure cli args are somehow mockable or defaults are usable.
+#     # Uvicorn would be run from the command line, e.g.:
+#     # uvicorn mlx_parallm.server.main:app --host 0.0.0.0 --port 8000 --reload
+#     pass 
