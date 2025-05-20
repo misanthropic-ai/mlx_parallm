@@ -1,3 +1,106 @@
+# mlx_parallm Server
+
+A high-performance, parallelized batch generation server for MLX models, supporting text generation, embeddings, and more, with an OpenAI-compatible API.
+
+## Project Goals
+
+-   High-performance inference for various MLX models (LLMs, LSTMs, RMs, Classifiers, etc.).
+-   OpenAI-compatible API endpoints (`/v1/completions`, `/v1/chat/completions`, `/v1/embeddings`).
+-   Support for LoRA/DoRA adapters and efficient weight updates for RL rollouts.
+-   Dynamic batching and request queuing.
+-   Multimodal input support.
+-   Quantized model support.
+-   Distributed operation capabilities.
+
+## Setup and Installation
+
+1.  **Clone the Repository (Example)**:
+    ```bash
+    # git clone https://your-repository-url/mlx_parallm.git
+    # cd mlx_parallm
+    ```
+
+2.  **Create and Activate a Python Virtual Environment**:
+    It is highly recommended to use a virtual environment. You can create one using `uv` or Python's built-in `venv` module.
+
+    Using `uv` (recommended):
+    ```bash
+    uv venv
+    source .venv/bin/activate
+    ```
+    Or using `venv`:
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate
+    ```
+
+3.  **Install Project Dependencies**:
+    This project uses `pyproject.toml` to manage dependencies with `uv`. Install the project in editable mode, which will also install all dependencies:
+    ```bash
+    uv pip install -e .
+    ```
+
+4.  **Hugging Face Hub Authentication (Important for Gated/Private Models)**:
+    If you plan to load models that are gated or private on the Hugging Face Hub, you need to authenticate. You can do this in one of two ways:
+    *   **Login via CLI (recommended for interactive use):**
+        ```bash
+        huggingface-cli login
+        ```
+    *   **Set Environment Variable:**
+        Set the `HF_TOKEN` environment variable to your Hugging Face access token (with read permissions).
+        ```bash
+        export HF_TOKEN=your_hf_token_here
+        ```
+    Ensure you have also been granted access to the specific model repository on the Hugging Face website.
+
+## Running the Server
+
+Once installed, you can start the server using the `mlx_parallm_serve` command:
+
+```bash
+mlx_parallm_serve --model-path <path_or_hf_id_to_your_model> --host <address> --port <port_number>
+```
+
+For example:
+```bash
+mlx_parallm_serve --model-path mistralai/Mistral-7B-Instruct-v0.1 --port 8000
+```
+
+This will start the Uvicorn server with the FastAPI application. You can then access the API endpoints, for example, the health check:
+`http://127.0.0.1:8000/health` (assuming default host and port 8000).
+
+## Dependency Management
+
+This project uses `pyproject.toml` as the single source of truth for dependencies, managed with `uv`.
+
+*   **To add a new runtime dependency**:
+    ```bash
+    uv add <package_name>
+    ```
+*   **To add a new development dependency**:
+    ```bash
+    uv add <package_name> --dev
+    ```
+    This will add the package to `pyproject.toml` and install it into your environment.
+
+*   **To ensure a reproducible environment (using a lockfile)**:
+    1.  Generate a lockfile (e.g., `requirements.lock.txt`):
+        ```bash
+        uv pip compile pyproject.toml --output-file requirements.lock.txt
+        ```
+    2.  Install dependencies from the lockfile:
+        ```bash
+        uv sync --locked requirements.lock.txt
+        ```
+    It's good practice to commit both `pyproject.toml` and the generated lockfile to your repository.
+
+## Development
+
+(Details about development workflows, running tests, etc., will be added here as the project progresses.)
+
+## Contributing
+
+(Guidelines for contributing to the project will be added here.)
 
 # MLX ParaLLM
 

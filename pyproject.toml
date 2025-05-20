@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mlx_parallm"
+version = "0.1.0"
+description = "A high-performance, parallelized batch generation server for MLX models."
+readme = "README.md" # You might want to create this file later
+requires-python = ">=3.8"
+license = {text = "MIT"} # Or your preferred license
+# authors = [ # Optional: Add your author details
+# {name = "Your Name", email = "your.email@example.com"},
+# ]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License", # Adjust if you chose a different license
+    "Operating System :: MacOS :: MacOS X", # Specific to MLX's current primary target
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = [
+    "annotated-types==0.7.0",
+    "anyio==4.9.0",
+    "certifi==2025.4.26", # Often a sub-dependency, but good to list if directly used or for specific versions
+    "charset-normalizer==3.4.2", # Sub-dependency of requests
+    "click==8.2.0", # Sub-dependency of fastapi/typer, good to list
+    "fastapi==0.115.12",
+    "filelock==3.18.0", # Sub-dependency of huggingface_hub/transformers
+    "fsspec==2025.3.2", # Sub-dependency of huggingface_hub
+    "h11==0.16.0", # Sub-dependency of uvicorn
+    "httptools==0.6.4", # For uvicorn[standard]
+    "huggingface-hub==0.31.4",
+    # "idna==3.10", # Sub-dependency of requests - usually not needed to list explicitly
+    "jinja2==3.1.6", # Often used with transformers or for templating
+    "markupsafe==3.0.2", # Sub-dependency of jinja2
+    "mlx==0.25.2",
+    "mlx-lm==0.24.1",
+    "numpy==2.2.6",
+    "packaging==25.0", # Sub-dependency of huggingface_hub/transformers
+    # "protobuf==6.31.0", # Often a sub-dependency, e.g. from tensorboard or onnx
+    "pydantic==2.11.4",
+    "pydantic-cli==9.1.0",
+    "pydantic-core==2.33.2",
+    "python-dotenv==1.1.0", # For uvicorn[standard] or general config
+    "pyyaml==6.0.2", # Sub-dependency of huggingface_hub/transformers
+    "regex==2024.11.6", # Sub-dependency of transformers
+    "requests==2.32.3",
+    "safetensors==0.5.3",
+    "sentencepiece==0.2.0", # For some tokenizers
+    "sniffio==1.3.1", # Sub-dependency of anyio/httpx
+    "starlette==0.46.2", # Core of FastAPI
+    "tokenizers==0.21.1", # From Hugging Face
+    "tqdm==4.67.1", # Sub-dependency of huggingface_hub/transformers
+    "transformers==4.51.3",
+    "typing-extensions==4.13.2", # Often needed by pydantic or fastapi
+    "typing-inspection==0.4.0", # Sub-dependency of pydantic
+    # "urllib3==2.4.0", # Sub-dependency of requests - usually not needed explicitly
+    "uvicorn[standard]==0.34.2", # [standard] pulls in httptools, uvloop, watchfiles, python-dotenv
+    # uvloop, watchfiles are covered by uvicorn[standard]
+    "websockets==15.0.1" # For uvicorn[standard]
+]
+
+[project.urls] # Optional
+# Homepage = "https://github.com/yourusername/mlx_parallm"
+# Repository = "https://github.com/yourusername/mlx_parallm"
+
+[project.scripts]
+mlx_parallm_serve = "mlx_parallm.cli:cli_runner"
+
+# You might want to add a [tool.hatch.version] section if you use hatch for versioning,
+# or [tool.uv.sources] if you want to pin package sources, but this is a good start. 

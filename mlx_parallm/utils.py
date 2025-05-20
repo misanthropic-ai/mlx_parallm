@@ -14,13 +14,13 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
-from huggingface_hub.utils._errors import RepositoryNotFoundError
+from huggingface_hub.utils import RepositoryNotFoundError
 from mlx.utils import tree_flatten
 from transformers import PreTrainedTokenizer
 
 # mlx_lm
 from mlx_lm.tokenizer_utils import TokenizerWrapper, load_tokenizer
-from mlx_lm.tuner.utils import apply_lora_layers
+from mlx_lm.tuner.utils import load_adapters
 from mlx_lm.tuner.utils import dequantize as dequantize_model
 
 # Local imports
@@ -97,10 +97,11 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
         except RepositoryNotFoundError:
             raise ModelNotFoundError(
                 f"Model not found for path or HF repo: {path_or_hf_repo}.\n"
-                "Please make sure you specified the local path or Hugging Face"
-                " repo id correctly.\nIf you are trying to access a private or"
-                " gated Hugging Face repo, make sure you are authenticated:\n"
-                "https://huggingface.co/docs/huggingface_hub/en/guides/cli#huggingface-cli-login"
+                "Please make sure you specified the local path or Hugging Face repo ID correctly.\n"
+                "If you are trying to access a private or gated Hugging Face repo, ensure that:\n"
+                "  1. You have been granted access to the repository on Hugging Face.\n"
+                "  2. You are authenticated: run \`huggingface-cli login\` or set the HF_TOKEN environment variable.\n"
+                "     (Details: https://huggingface.co/docs/huggingface_hub/en/guides/cli#huggingface-cli-login)"
             ) from None
     return model_path
 
@@ -256,7 +257,7 @@ def stream_generate(
     if not isinstance(tokenizer, TokenizerWrapper):
         tokenizer = TokenizerWrapper(tokenizer)
 
-    prompt_tokens = mx.array(tokenizer.encode(prompt))
+    prompt_tokens = mx.array(tokenizer.encode(prompt))[None, :]
     detokenizer = tokenizer.detokenizer
 
     detokenizer.reset()
@@ -264,9 +265,12 @@ def stream_generate(
         generate_step(prompt_tokens, model, **kwargs),
         range(max_tokens),
     ):
-        if token == tokenizer.eos_token_id:
+        # token is expected to be mx.array of shape (1,1) because prompt_tokens is (1, seq_len)
+        token_item = token.item() # Get the integer token ID
+
+        if token_item == tokenizer.eos_token_id: # Compare item with eos_token_id
             break
-        detokenizer.add_token(token)
+        detokenizer.add_token(token_item) # Pass the integer token ID
 
         # Yield the last segment if streaming
         yield detokenizer.last_segment
@@ -517,7 +521,7 @@ def load(
             Defaults to an empty dictionary.
         model_config(dict, optional): Configuration parameters specifically for the model.
             Defaults to an empty dictionary.
-        adapter_path (str, optional): Path to the LoRA adapters. If provided, applies LoRA layers
+        adapter_path (str, optional): Path to the LoRA/DoRA adapters. If provided, applies adapter layers
             to the model. Default: ``None``.
         lazy (bool): If False eval the model parameters to make sure they are
             loaded in memory before returning, otherwise they will be loaded
@@ -533,7 +537,7 @@ def load(
 
     model = load_model(model_path, lazy, model_config)
     if adapter_path is not None:
-        model = apply_lora_layers(model, adapter_path)
+        model = load_adapters(model, adapter_path)
         model.eval()
     tokenizer = load_tokenizer(model_path, tokenizer_config)
 
@@ -772,3 +776,103 @@ def convert(
 
     if upload_repo is not None:
         upload_to_hub(mlx_path, upload_repo, hf_path)
+
+def batch_stream_generate_text(
+    model: nn.Module,
+    tokenizer: TokenizerWrapper, # Expecting TokenizerWrapper
+    prompts_tokens: mx.array,    # Batched and padded tokenized prompts from tokenizer._tokenizer(prompts_list, padding=True)['input_ids']
+    max_tokens: int,
+    **kwargs # Passed to generate_step (e.g., temp, top_p)
+) -> Generator[List[Tuple[Optional[str], Optional[str]]], None, None]:
+    """
+    Streams generated text segments for a batch of prompts.
+
+    Args:
+        model (nn.Module): The language model.
+        tokenizer (TokenizerWrapper): The tokenizer wrapper.
+        prompts_tokens (mx.array): Batched and padded tokenized input prompts.
+        max_tokens (int): The maximum number of tokens to generate for each prompt.
+        **kwargs: Additional arguments to pass to `generate_step`.
+
+    Yields:
+        Generator[List[Tuple[Optional[str], Optional[str]]], None, None]:
+        A list where each element corresponds to a prompt in the batch.
+        Each element is a tuple: (text_delta: Optional[str], finish_reason: Optional[str]).
+        - text_delta: The newly generated text segment for this step.
+        - finish_reason: "stop" if EOS is reached, "length" if max_tokens is reached.
+    """
+    batch_size = prompts_tokens.shape[0]
+    
+    # Each sequence in the batch needs its own detokenizer state
+    # Ensure the tokenizer passed is a TokenizerWrapper as it has the .detokenizer property
+    if not isinstance(tokenizer, TokenizerWrapper):
+        # This case should ideally be handled before calling, or ensure TokenizerWrapper is always used.
+        # Forcing it here, but this might indicate a type inconsistency upstream.
+        tokenizer = TokenizerWrapper(tokenizer)
+
+    detokenizers = [copy.deepcopy(tokenizer.detokenizer) for _ in range(batch_size)]
+    for detok in detokenizers:
+        detok.reset() # Ensure each detokenizer is in a clean state
+
+    active_sequences = [True] * batch_size
+    generated_tokens_counts = [0] * batch_size
+    eos_token_id = tokenizer.eos_token_id
+
+    # Remove 'repetition_penalty' from kwargs if present, as generate_step doesn't support it yet
+    # and would raise NotImplementedError.
+    # Or, ensure generate_step is updated if we intend to support it.
+    # For now, following the pattern of stream_generate which doesn't explicitly pass it to generate_step.
+    current_generate_step_kwargs = {k: v for k, v in kwargs.items() if k != 'repetition_penalty'}
+
+    for (batch_next_token_ids, _), _ in zip(
+        generate_step(prompts_tokens, model, **current_generate_step_kwargs), # generate_step yields (tokens, probs)
+        range(max_tokens) # Overall constraint on generated tokens
+    ):
+        # batch_next_token_ids is (batch_size, 1)
+        current_step_deltas: List[Tuple[Optional[str], Optional[str]]] = [(None, None)] * batch_size
+        any_sequence_active = False
+
+        for i in range(batch_size):
+            if not active_sequences[i]:
+                continue
+
+            any_sequence_active = True
+            token_id = batch_next_token_ids[i, 0].item()
+            generated_tokens_counts[i] += 1
+
+            current_text_delta = None
+            current_finish_reason = None
+
+            if token_id == eos_token_id:
+                active_sequences[i] = False
+                detokenizers[i].finalize() # Finalize before getting the last segment
+                current_text_delta = detokenizers[i].last_segment
+                current_finish_reason = "stop"
+            else:
+                detokenizers[i].add_token(token_id)
+                current_text_delta = detokenizers[i].last_segment
+            
+            # Check for max_tokens for this specific sequence
+            if active_sequences[i] and generated_tokens_counts[i] >= max_tokens:
+                active_sequences[i] = False
+                if not current_finish_reason: # If not already stopped by EOS
+                    detokenizers[i].finalize()
+                    # If there was a delta from add_token, it's already set.
+                    # If finalize produces more, ensure it's captured.
+                    final_segment = detokenizers[i].last_segment
+                    if final_segment: # Only overwrite if finalize gives something new or different
+                        current_text_delta = final_segment
+                    current_finish_reason = "length"
+
+            current_step_deltas[i] = (current_text_delta, current_finish_reason)
+
+        yield current_step_deltas
+
+        if not any_sequence_active:
+            break
+
+    # After the loop, some sequences might have been cut off by the outer max_tokens
+    # or by all sequences hitting EOS. If any were active and then stopped by the outer loop finishing,
+    # they should be finalized and marked with "length".
+    # This is implicitly handled if generated_tokens_counts[i] >= max_tokens leads to finish_reason = "length".
+    # No further explicit yield should be needed here if the loop correctly finalizes.
