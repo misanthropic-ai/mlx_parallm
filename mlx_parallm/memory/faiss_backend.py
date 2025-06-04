@@ -100,12 +100,17 @@ class FAISSMemoryBackend(MemoryBackend):
         all_keys = mx.concatenate(self.indexes[model_id]['memory_keys'], axis=0)
         all_values = mx.concatenate(self.indexes[model_id]['memory_values'], axis=0)
         
-        # Search for each head
+        # Search for each head - but we need to handle the case where we have fewer KV heads
+        # For models with grouped query attention, we need to map query heads to KV heads
+        stored_num_heads = self.indexes[model_id]['num_heads']
+        
         for head_idx in range(num_heads):
+            # Map query head to KV head for grouped query attention
+            kv_head_idx = head_idx % stored_num_heads
             head_queries = queries_normalized[:, head_idx, :, :].reshape(-1, head_dim)  # (batch_size * seq_len, head_dim)
             
-            # Search in FAISS
-            similarities, indices = self.indexes[model_id]['faiss_indexes'][head_idx].search(
+            # Search in FAISS using the KV head index
+            similarities, indices = self.indexes[model_id]['faiss_indexes'][kv_head_idx].search(
                 head_queries.astype(np.float32), topk
             )
             
@@ -120,8 +125,11 @@ class FAISSMemoryBackend(MemoryBackend):
             for b in range(batch_size):
                 for s in range(seq_len):
                     idx = indices[b, s, :]
-                    selected_keys.append(all_keys[idx, head_idx, :])
-                    selected_values.append(all_values[idx, head_idx, :])
+                    # Convert indices to MLX array for proper indexing
+                    idx_mx = mx.array(idx)
+                    # Use kv_head_idx to select from the stored KV heads
+                    selected_keys.append(mx.take(all_keys[:, kv_head_idx, :], idx_mx, axis=0))
+                    selected_values.append(mx.take(all_values[:, kv_head_idx, :], idx_mx, axis=0))
             
             selected_keys = mx.stack(selected_keys).reshape(batch_size, seq_len, topk, head_dim)
             selected_values = mx.stack(selected_values).reshape(batch_size, seq_len, topk, head_dim)

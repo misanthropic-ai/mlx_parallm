@@ -51,11 +51,14 @@ class ExtendedAttention(nn.Module):
         self.v_proj = nn.Linear(dim, n_kv_heads * head_dim, bias=attention_bias)
         self.o_proj = nn.Linear(n_heads * head_dim, dim, bias=attention_bias)
         
-        rope_scale = (
-            1 / args.rope_scaling["factor"]
-            if args.rope_scaling is not None and args.rope_scaling["type"] == "linear"
-            else 1
-        )
+        rope_scale = 1
+        if args.rope_scaling is not None:
+            # Handle both Llama 2 and Llama 3 style
+            if "type" in args.rope_scaling and args.rope_scaling["type"] == "linear":
+                rope_scale = 1 / args.rope_scaling["factor"]
+            elif "rope_type" in args.rope_scaling and args.rope_scaling["rope_type"] == "llama3":
+                # For Llama 3, we use the factor differently
+                rope_scale = 1 / args.rope_scaling.get("factor", 1)
         self.rope = nn.RoPE(
             head_dim,
             traditional=args.rope_traditional,
@@ -145,17 +148,38 @@ class ExtendedAttention(nn.Module):
                     sim_mask = (sim_mask < self.sim_threshold).astype(scores.dtype)
                     memory_scores = memory_scores - sim_mask * 1e9
                 
-                # Concatenate memory scores with regular scores
+                # For concatenation, we need to match dimensions properly
+                # memory_scores shape: (B, n_heads, L, topk)
+                # scores shape: (B, n_heads, L, kv_seq_len)
+                # We concatenate along the last dimension (key dimension)
                 scores = mx.concatenate([memory_scores, scores], axis=-1)
                 
-                # Concatenate memory values with regular values
-                values = mx.concatenate([selected_values, values], axis=2)
+                # For values, we need to handle the sequence length mismatch
+                # selected_values shape: (B, n_heads, L * topk, head_dim)
+                # but we need to reshape it to (B, n_heads, topk, head_dim) for each query position
+                # Then we can concatenate with the full cached values
+                
+                # Reshape selected_values from (B, n_heads, L * topk, head_dim) 
+                # to (B, n_heads, L, topk, head_dim) then back to (B, n_heads, L * topk, head_dim)
+                # This is already in the right format for attention computation
+                
+                # The trick is that we don't actually concatenate the values here
+                # Instead, we'll handle them separately in the attention computation
+                memory_values = selected_values
                 
                 # Update mask to include memory mask
                 if mask is not None:
                     memory_mask = self._create_memory_mask(self.memory_topk, L, mask.dtype)
-                    memory_mask = mx.expand_dims(memory_mask, axis=0)
-                    memory_mask = mx.expand_dims(memory_mask, axis=0)
+                    # Ensure masks have the same shape by adding batch and head dimensions if needed
+                    if mask.ndim == 2:
+                        # mask is (L, kv_seq_len), expand to (1, 1, L, kv_seq_len)
+                        mask = mx.expand_dims(mx.expand_dims(mask, axis=0), axis=0)
+                        memory_mask = mx.expand_dims(mx.expand_dims(memory_mask, axis=0), axis=0)
+                    elif mask.ndim == 3:
+                        # mask is (1, L, kv_seq_len), expand to (1, 1, L, kv_seq_len)
+                        mask = mx.expand_dims(mask, axis=0)
+                        memory_mask = mx.expand_dims(mx.expand_dims(memory_mask, axis=0), axis=0)
+                    # Now concatenate along the key dimension (last axis)
                     full_mask = mx.concatenate([memory_mask, mask], axis=-1)
                     mask = full_mask
                 
@@ -170,7 +194,47 @@ class ExtendedAttention(nn.Module):
         weights = mx.softmax(scores, axis=-1)
         
         # Apply attention to values
-        output = weights @ values
+        if 'memory_values' in locals() and memory_values is not None:
+            # Split attention weights for memory and regular values
+            memory_weights = weights[:, :, :, :self.memory_topk * L]
+            regular_weights = weights[:, :, :, self.memory_topk * L:]
+            
+            # For memory values, we need to handle the fact that each query position
+            # has its own set of retrieved memories
+            # memory_values shape: (B, n_heads, L * topk, head_dim)
+            # We reshape it to group memories by query position
+            memory_values_reshaped = memory_values.reshape(B, self.n_heads, L, self.memory_topk, self.head_dim)
+            
+            # Similarly reshape memory weights to align with the structure
+            # memory_weights shape: (B, n_heads, L, topk * L)
+            # But we only want each query to attend to its own topk memories
+            
+            # Create a mask to ensure queries only attend to their own memories
+            # This is more efficient than the loop approach
+            memory_output_parts = []
+            for i in range(L):
+                # Extract weights for position i attending to its memories
+                start_idx = i * self.memory_topk
+                end_idx = (i + 1) * self.memory_topk
+                pos_weights = memory_weights[:, :, i:i+1, start_idx:end_idx]  # (B, n_heads, 1, topk)
+                
+                # Get memory values for position i
+                pos_values = memory_values_reshaped[:, :, i, :, :]  # (B, n_heads, topk, head_dim)
+                
+                # Compute weighted sum
+                memory_output = pos_weights @ pos_values  # (B, n_heads, 1, head_dim)
+                memory_output_parts.append(memory_output)
+            
+            # Concatenate outputs from all positions
+            memory_output_full = mx.concatenate(memory_output_parts, axis=2)  # (B, n_heads, L, head_dim)
+            
+            # Compute regular attention with cached values
+            regular_output = regular_weights @ values  # (B, n_heads, L, head_dim)
+            
+            # Combine outputs
+            output = memory_output_full + regular_output
+        else:
+            output = weights @ values
         
         # Reshape and project output
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
@@ -319,23 +383,34 @@ class ExtendedModel(nn.Module):
         if self._model_id is None:
             raise ValueError("Model ID must be set before adding memories")
         
+        # Ensure memory_tokens is 2D
+        if memory_tokens.ndim == 1:
+            memory_tokens = memory_tokens.reshape(1, -1)
+        
         # Encode memories through the model to get key-value pairs
         memory_embeds = self.model.embed_tokens(memory_tokens)
+        h = memory_embeds
         
         # Process through each layer to get key-value representations
         for layer_idx, layer in enumerate(self.model.layers):
             if isinstance(layer, ExtendedTransformerBlock):
-                # Get key and value projections
-                memory_embeds_norm = layer.self_attn.input_layernorm(memory_embeds)
+                # Apply layer normalization (from the transformer block)
+                h_norm = layer.input_layernorm(h)
                 
-                # Project to keys and values
-                keys = layer.self_attn.k_proj(memory_embeds_norm)
-                values = layer.self_attn.v_proj(memory_embeds_norm)
+                # Project to keys and values using the attention module
+                keys = layer.self_attn.k_proj(h_norm)
+                values = layer.self_attn.v_proj(h_norm)
                 
-                # Reshape to (num_memories * seq_len, n_heads, head_dim)
-                B, L, _ = keys.shape
-                keys = keys.reshape(B * L, layer.self_attn.n_kv_heads, -1)
-                values = values.reshape(B * L, layer.self_attn.n_kv_heads, -1)
+                # Get shape info
+                B, L, D = keys.shape
+                
+                # Reshape to (B, L, n_kv_heads, head_dim) then transpose to (B, n_kv_heads, L, head_dim)
+                keys = keys.reshape(B, L, layer.self_attn.n_kv_heads, -1).transpose(0, 2, 1, 3)
+                values = values.reshape(B, L, layer.self_attn.n_kv_heads, -1).transpose(0, 2, 1, 3)
+                
+                # Now flatten batch and sequence dimensions: (B * L, n_kv_heads, head_dim)
+                keys = keys.transpose(0, 2, 1, 3).reshape(B * L, layer.self_attn.n_kv_heads, -1)
+                values = values.transpose(0, 2, 1, 3).reshape(B * L, layer.self_attn.n_kv_heads, -1)
                 
                 # Add to memory backend
                 backend = self.model.memory_manager.get_backend()
@@ -343,8 +418,18 @@ class ExtendedModel(nn.Module):
                     self._model_id,
                     keys,
                     values,
-                    memory_ids=memory_tokens.reshape(-1).tolist() if memory_tokens.ndim > 1 else memory_tokens.tolist()
+                    memory_ids=memory_tokens.reshape(-1).tolist()
                 )
+                
+                # Forward through the rest of the layer to get the next hidden state
+                # This is important to propagate the representation through layers
+                attn_out, _ = layer.self_attn(h_norm, memory_backend=None)
+                h = h + attn_out
+                mlp_out = layer.mlp(layer.post_attention_layernorm(h))
+                h = h + mlp_out
+            else:
+                # For non-extended layers, just do a forward pass
+                h = layer(h)
     
     def clear_memories(self):
         """Clear all memories for this model instance."""
