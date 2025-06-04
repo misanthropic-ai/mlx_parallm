@@ -309,8 +309,98 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
 *   [ ] **Reference Implementation Analysis:**
     *   [x] Clone extended-mind-transformers repository as submodule in `reference/` directory.
     *   [x] Analyze PyTorch implementation to understand core mechanisms.
-    *   [ ] Document key architectural changes needed for MLX port.
+    *   [x] Document key architectural changes needed for MLX port.
     *   [ ] Identify performance-critical components for optimization.
+
+### Phase 1: Core Implementation (Current Sprint)
+
+*   [x] **Dependencies and Setup:**
+    *   [x] Add FAISS-CPU to dependencies: `uv pip install faiss-cpu`
+    *   [x] Add einops for tensor manipulation: `uv pip install einops`
+    *   [x] Create memory backend abstraction layer for future extensibility
+
+*   [x] **Extended Model Architecture:**
+    *   [x] Create `mlx_parallm/models/llama_extended.py` with:
+        *   [x] `ExtendedModelArgs` dataclass extending base `ModelArgs`
+        *   [x] `ExtendedAttention` class with memory retrieval mechanism
+        *   [x] `ExtendedTransformerBlock` using extended attention
+        *   [x] `ExtendedLlamaModel` and `ExtendedModel` wrapper classes
+    *   [x] Implement memory configuration parameters:
+        *   `use_external_mind`: Enable/disable memory usage
+        *   `memory_topk`: Number of memories to retrieve per query
+        *   `mask_by_sim`: Enable similarity-based masking
+        *   `sim_threshold`: Similarity threshold for masking
+        *   `memory_backend`: Backend type (initially "faiss", future: "redis", "neo4j", "sql")
+
+*   [x] **Memory Backend System:**
+    *   [x] Create `mlx_parallm/memory/` module with:
+        *   [x] `base.py`: Abstract `MemoryBackend` interface
+        *   [x] `faiss_backend.py`: FAISS implementation
+        *   [x] `manager.py`: `MemoryManager` for backend coordination
+    *   [x] Backend interface should support:
+        *   `add_memories(model_id, memories)`: Add memory embeddings
+        *   `search(model_id, queries, topk)`: Retrieve top-k memories
+        *   `clear(model_id)`: Clear all memories for a model
+        *   `list_memories(model_id)`: List memory metadata
+
+*   [x] **MLX-Specific Implementations:**
+    *   [x] Port cosine similarity computation from torch to MLX
+    *   [x] Implement efficient top-k selection using MLX operations
+    *   [x] Create memory attention masking for MLX
+    *   [x] Optimize vector normalization for MLX arrays
+
+*   [x] **Model Loading Integration:**
+    *   [x] Extend `mlx_parallm/utils.py` to:
+        *   [x] Detect if model should use extended variant
+        *   [x] Add `use_extended_mind` parameter to `load()` function
+        *   [x] Handle extended model configuration loading
+    *   [ ] Modify model registry to track extended capabilities
+
+*   [ ] **API Integration:**
+    *   [ ] Add to completion request schemas:
+        *   `memories`: Optional list of memory texts
+        *   `memory_topk`: Optional override for topk
+        *   `use_memories`: Optional boolean to enable/disable
+    *   [ ] Extend batch processing to handle memory-augmented requests
+    *   [ ] Update streaming generation for memory support
+
+### Phase 2: Testing and Validation
+
+*   [ ] **Unit Tests:**
+    *   [ ] Test extended attention mechanism in isolation
+    *   [ ] Test memory backend operations (add, search, clear)
+    *   [ ] Test cosine similarity and top-k selection
+    *   [ ] Test memory masking functionality
+
+*   [ ] **Integration Tests:**
+    *   [ ] Create test script `tests/test_extended_mind.py`:
+        *   [ ] Load DeepHermes-3-Llama-3-8B-Preview with extended mind
+        *   [ ] Test memory addition and retrieval
+        *   [ ] Compare outputs with and without memories
+        *   [ ] Verify memory usage tracking
+    *   [ ] Test batched generation with mixed memory/non-memory requests
+    *   [ ] Test streaming with memory-augmented generation
+
+*   [ ] **Benchmark Tests:**
+    *   [ ] Memory retrieval performance vs number of memories
+    *   [ ] Generation speed impact with memory augmentation
+    *   [ ] Memory scaling tests (1K, 10K, 100K memories)
+
+### Phase 3: Demo and Documentation
+
+*   [ ] **Demo Implementation:**
+    *   [ ] Create `demo_extended_mind.py` showing:
+        *   [ ] Loading extended model
+        *   [ ] Adding factual memories (e.g., Wikipedia entries)
+        *   [ ] Demonstrating improved factual accuracy
+        *   [ ] Analyzing which memories were used
+    *   [ ] Port key examples from reference implementation
+
+*   [ ] **Documentation:**
+    *   [ ] Add Extended Mind section to README
+    *   [ ] Document API changes for memory parameters
+    *   [ ] Create usage guide with examples
+    *   [ ] Document performance characteristics
 
 *   [ ] **Core Architecture Implementation:**
     *   [ ] **Extended Attention Mechanism:**
