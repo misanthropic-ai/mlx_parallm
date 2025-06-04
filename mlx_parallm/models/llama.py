@@ -29,22 +29,16 @@ class ModelArgs(BaseModelArgs):
             self.num_key_value_heads = self.num_attention_heads
 
         if self.rope_scaling:
-            # Handle both Llama 2 style {"type": "linear", "factor": X} and 
-            # Llama 3 style {"rope_type": "llama3", "factor": X, ...}
-            if "rope_type" in self.rope_scaling:
-                # Llama 3 style - validate rope_type
-                if self.rope_scaling["rope_type"] not in ["llama3", "linear"]:
-                    raise ValueError(f"rope_scaling 'rope_type' {self.rope_scaling['rope_type']} not supported")
-            elif "type" in self.rope_scaling:
-                # Llama 2 style - validate type
-                if self.rope_scaling["type"] != "linear":
-                    raise ValueError("rope_scaling 'type' currently only supports 'linear'")
-            else:
-                raise ValueError("rope_scaling must contain either 'type' or 'rope_type'")
-            
-            # Both styles should have 'factor'
             if "factor" not in self.rope_scaling:
                 raise ValueError("rope_scaling must contain 'factor'")
+            
+            # Check for either 'type' or 'rope_type'
+            if "type" in self.rope_scaling:
+                if self.rope_scaling["type"] != "linear":
+                    raise ValueError("rope_scaling 'type' currently only supports 'linear'")
+            elif "rope_type" in self.rope_scaling:
+                if self.rope_scaling["rope_type"] not in ["llama3", "linear"]:
+                    raise ValueError(f"rope_scaling 'rope_type' {self.rope_scaling['rope_type']} not supported")
 
 
 class Attention(nn.Module):
@@ -69,13 +63,12 @@ class Attention(nn.Module):
 
         rope_scale = 1
         if args.rope_scaling is not None:
-            # Handle both Llama 2 and Llama 3 style
             if "type" in args.rope_scaling and args.rope_scaling["type"] == "linear":
                 rope_scale = 1 / args.rope_scaling["factor"]
-            elif "rope_type" in args.rope_scaling and args.rope_scaling["rope_type"] == "llama3":
-                # For Llama 3, we use the factor differently
-                # The actual implementation is more complex, but for now we'll use a simplified version
-                rope_scale = 1 / args.rope_scaling.get("factor", 1)
+            elif "rope_type" in args.rope_scaling:
+                if args.rope_scaling["rope_type"] == "linear":
+                    rope_scale = 1 / args.rope_scaling["factor"]
+                # For llama3 rope_type, we don't scale
         self.rope = nn.RoPE(
             head_dim,
             traditional=args.rope_traditional,

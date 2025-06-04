@@ -53,12 +53,12 @@ class ExtendedAttention(nn.Module):
         
         rope_scale = 1
         if args.rope_scaling is not None:
-            # Handle both Llama 2 and Llama 3 style
             if "type" in args.rope_scaling and args.rope_scaling["type"] == "linear":
                 rope_scale = 1 / args.rope_scaling["factor"]
-            elif "rope_type" in args.rope_scaling and args.rope_scaling["rope_type"] == "llama3":
-                # For Llama 3, we use the factor differently
-                rope_scale = 1 / args.rope_scaling.get("factor", 1)
+            elif "rope_type" in args.rope_scaling:
+                if args.rope_scaling["rope_type"] == "linear":
+                    rope_scale = 1 / args.rope_scaling["factor"]
+                # For llama3 rope_type, we don't scale
         self.rope = nn.RoPE(
             head_dim,
             traditional=args.rope_traditional,
