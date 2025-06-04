@@ -1,6 +1,6 @@
 # TODO: mlx_parallm High-Performance Generation Server
 
-This document outlines the plan to develop `mlx_parallm` into a parallelized, high-performance batch generation server, similar to vLLM or sglang, with support for LoRA/DoRA adapters, RL rollouts, and Reward Model (RM) functionalities.
+This document outlines the plan to develop `mlx_parallm` into a parallelized, high-performance batch generation server, similar to vLLM or sglang, with support for LoRA/DoRA adapters, RL rollouts, Reward Model (RM) functionalities, and Extended Mind Transformers for memory-augmented generation.
 
 ## I. Core Server Infrastructure (FastAPI & Uvicorn)
 
@@ -304,9 +304,145 @@ This document outlines the plan to develop `mlx_parallm` into a parallelized, hi
 *   [ ] **Logging:**
     *   [ ] Implement structured logging throughout the application.
 
+## XVI. Extended Mind Transformers Integration
+
+*   [ ] **Reference Implementation Analysis:**
+    *   [x] Clone extended-mind-transformers repository as submodule in `reference/` directory.
+    *   [x] Analyze PyTorch implementation to understand core mechanisms.
+    *   [ ] Document key architectural changes needed for MLX port.
+    *   [ ] Identify performance-critical components for optimization.
+
+*   [ ] **Core Architecture Implementation:**
+    *   [ ] **Extended Attention Mechanism:**
+        *   [ ] Implement `ExtendedMLXAttention` class based on existing `BatchedKVCache` architecture.
+        *   [ ] Add cosine similarity computation between normalized query and memory key vectors.
+        *   [ ] Implement top-k memory retrieval using MLX operations.
+        *   [ ] Create memory-specific attention masking to ensure queries only attend to their own memories.
+        *   [ ] Handle concatenation of memory attention weights with regular attention weights.
+    *   [ ] **Extended Model Configuration:**
+        *   [ ] Create `ExtendedModelConfig` class with memory-specific parameters:
+            *   `use_external_mind`: Boolean to enable/disable memory functionality.
+            *   `use_external_mind_by_layer`: Per-layer memory usage control.
+            *   `topk`: Number of memories to retrieve per query token.
+            *   `memory_type`: Support for "manual" and future "faiss" modes.
+            *   `mask_by_sim`: Boolean for similarity threshold masking.
+            *   `sim_threshold`: Threshold value for memory relevance filtering.
+            *   `memory_device`: Device specification for memory storage.
+            *   `remove_special_tokens`: Filter special tokens from memories.
+    *   [ ] **Model Architecture Modifications:**
+        *   [ ] Extend existing model classes (Llama, Gemma, etc.) with extended attention layers.
+        *   [ ] Implement memory key-value cache management separate from regular KV cache.
+        *   [ ] Add memory preprocessing and tokenization handling.
+
+*   [ ] **Memory Management System:**
+    *   [ ] **Manual Memory Storage:**
+        *   [ ] Implement `MemoryManager` class for storing and retrieving external memories.
+        *   [ ] Support for adding/removing/clearing memories via `model.memory_ids`.
+        *   [ ] Efficient memory encoding and storage using MLX arrays.
+        *   [ ] Memory preprocessing including special token removal.
+    *   [ ] **Memory Retrieval Engine:**
+        *   [ ] Implement efficient cosine similarity computation in MLX.
+        *   [ ] Top-k selection algorithms optimized for batched inference.
+        *   [ ] Memory attention weight computation and normalization.
+        *   [ ] Support for similarity-based masking of low-relevance memories.
+    *   [ ] **(Future) FAISS Integration:**
+        *   [ ] Research MLX-compatible vector database solutions.
+        *   [ ] Implement FAISS-like indexing for large-scale memory storage.
+        *   [ ] Layer and head-specific memory indexing for multi-head attention.
+        *   [ ] Efficient memory reconstruction and retrieval.
+
+*   [ ] **API Extensions for Memory-Augmented Generation:**
+    *   [ ] **Enhanced Completions Endpoint:**
+        *   [ ] Add `memories` parameter to `/v1/completions` for providing external context.
+        *   [ ] Add `memory_topk` parameter for controlling memory retrieval count.
+        *   [ ] Add `memory_similarity_threshold` for relevance filtering.
+        *   [ ] Support for `output_retrieved_memory_idx` to track memory usage.
+    *   [ ] **Enhanced Chat Completions Endpoint:**
+        *   [ ] Extend `/v1/chat/completions` with memory parameters.
+        *   [ ] Support for conversation-level memories and per-message memories.
+        *   [ ] Integration with chat templates while preserving memory functionality.
+    *   [ ] **Memory Management Endpoints:**
+        *   [ ] `/v1/memories/add` - Add memories to a model instance.
+        *   [ ] `/v1/memories/clear` - Clear all memories for a model.
+        *   [ ] `/v1/memories/list` - List current memories and their metadata.
+        *   [ ] `/v1/memories/search` - Search memories by similarity to query text.
+
+*   [ ] **Batching and Performance Optimization:**
+    *   [ ] **Batched Memory Retrieval:**
+        *   [ ] Extend batch processing worker to handle memory-augmented requests.
+        *   [ ] Implement efficient batched similarity computation across multiple queries.
+        *   [ ] Optimize memory concatenation and attention weight computation for batches.
+        *   [ ] Handle variable memory requirements across batch items.
+    *   [ ] **Memory-Aware KV Cache:**
+        *   [ ] Extend `BatchedKVCache` to handle memory key-value pairs.
+        *   [ ] Implement efficient memory cache management and cleanup.
+        *   [ ] Optimize memory storage and retrieval for streaming generation.
+    *   [ ] **Performance Optimizations:**
+        *   [ ] Profile memory retrieval and attention computation bottlenecks.
+        *   [ ] Implement MLX-specific optimizations for vector operations.
+        *   [ ] Cache frequently accessed memory embeddings.
+        *   [ ] Optimize memory preprocessing and tokenization pipelines.
+
+*   [ ] **Integration with Existing Features:**
+    *   [ ] **Streaming Support:**
+        *   [ ] Extend streaming generation to work with memory-augmented models.
+        *   [ ] Handle memory retrieval in streaming contexts.
+        *   [ ] Provide memory usage tracking in streaming responses.
+    *   [ ] **Multi-Model Support:**
+        *   [ ] Support memory-augmented and regular models in the same server instance.
+        *   [ ] Model registry extensions for memory-capable models.
+        *   [ ] Per-model memory management and isolation.
+    *   [ ] **LoRA/Adapter Compatibility:**
+        *   [ ] Ensure memory functionality works with LoRA-adapted models.
+        *   [ ] Handle memory-specific adapter parameters if needed.
+        *   [ ] Memory persistence across adapter weight updates.
+
+*   [ ] **Testing and Validation:**
+    *   [ ] **Unit Tests:**
+        *   [ ] Test memory retrieval algorithms and similarity computation.
+        *   [ ] Test extended attention mechanism correctness.
+        *   [ ] Test memory management operations (add/clear/search).
+    *   [ ] **Integration Tests:**
+        *   [ ] End-to-end tests with memory-augmented generation.
+        *   [ ] Performance comparisons between regular and memory-augmented models.
+        *   [ ] Batching behavior with mixed memory/non-memory requests.
+    *   [ ] **Benchmark Tests:**
+        *   [ ] Memory retrieval performance across different memory sizes.
+        *   [ ] Attention computation scaling with memory count.
+        *   [ ] Generation quality improvements with relevant memories.
+
+*   [ ] **Documentation and Examples:**
+    *   [ ] **API Documentation:**
+        *   [ ] Document all memory-related API endpoints and parameters.
+        *   [ ] Provide examples of memory-augmented generation workflows.
+        *   [ ] Document performance characteristics and limitations.
+    *   [ ] **Usage Examples:**
+        *   [ ] Create demo notebooks showing memory-augmented generation.
+        *   [ ] Provide examples for different use cases (Q&A, long-context, RAG).
+        *   [ ] Document best practices for memory management and optimization.
+    *   [ ] **Migration Guide:**
+        *   [ ] Document differences from original extended-mind-transformers.
+        *   [ ] Provide conversion utilities for existing memory datasets.
+        *   [ ] Performance tuning guidelines for MLX-specific optimizations.
+
+*   [ ] **Future Enhancements:**
+    *   [ ] **Dynamic Memory Updates:**
+        *   [ ] Support for updating memories during generation.
+        *   [ ] Memory learning and adaptation mechanisms.
+        *   [ ] Conversation-aware memory management.
+    *   [ ] **Advanced Memory Types:**
+        *   [ ] Support for structured memories (JSON, tables, graphs).
+        *   [ ] Multi-modal memories (text + images).
+        *   [ ] Hierarchical memory organization.
+    *   [ ] **Memory Compression:**
+        *   [ ] Implement memory compression techniques for large-scale storage.
+        *   [ ] Adaptive memory pruning based on usage patterns.
+        *   [ ] Memory summarization and consolidation.
+
 ## Notes & Considerations:
 
 *   **Error Handling:** Robust error handling and informative error responses for the API.
 *   **Security:** Basic security considerations for API endpoints.
 *   **Scalability:** Design with future scalability in mind (e.g., ability to run multiple server instances).
-*   **`mlx-lm` Evolution:** Keep an eye on `mlx-lm` library updates, as they might provide new features or more efficient ways to implement parts of this plan. 
+*   **`mlx-lm` Evolution:** Keep an eye on `mlx-lm` library updates, as they might provide new features or more efficient ways to implement parts of this plan.
+*   **Extended Mind Integration:** Port PyTorch extended-mind-transformers to MLX while maintaining compatibility and performance. Focus on core memory retrieval and attention mechanisms first. 

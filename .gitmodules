@@ -1,0 +1,3 @@
+[submodule "reference/extended-mind-transformers"]
+	path = reference/extended-mind-transformers
+	url = https://github.com/normal-computing/extended-mind-transformers.git
