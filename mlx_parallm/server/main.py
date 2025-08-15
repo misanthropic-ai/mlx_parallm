@@ -16,7 +16,8 @@ from mlx_parallm.server.schemas import (
     ModelList, InternalModelRecord, ModelCard, ModelStatus,
     CompletionRequest, CompletionResponse, CompletionChoice, CompletionUsage,
     ChatCompletionRequest, ChatMessage, ChatCompletionChoice, ChatCompletionResponse,
-    DeltaMessage, ChatCompletionStreamChoice, ChatCompletionChunk
+    DeltaMessage, ChatCompletionStreamChoice, ChatCompletionChunk,
+    PerplexityRequest, PerplexityResponse
 )
 from mlx_parallm.utils import (
     load as load_model_and_tokenizer_util,
@@ -25,6 +26,9 @@ from mlx_parallm.utils import (
     stream_generate as stream_generate_text_util,
     batch_generate_text as batch_generate_text_util
 )
+from mlx_parallm.sample_utils import top_p_sampling
+import numpy as np
+import math
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_parallm.cli import current_server_args # For accessing CLI args like model_path
 
@@ -241,6 +245,16 @@ async def create_completion(request: CompletionRequest):
     # Add log to inspect request.stream before the conditional block
     logging.info(f"Inside create_completion for model {request.model}. Parsed stream flag: {request.stream}, type: {type(request.stream)}")
 
+    # If token-level outputs are requested, handle synchronously (non-batched)
+    if (request.logprobs is not None and request.logprobs > 0) or (request.echo is True):
+        logging.info("Handling completion with logprobs/echo synchronously.")
+        return await _compute_completion_with_logprobs(
+            model_instance,
+            tokenizer_instance,
+            request.model,
+            request
+        )
+
     if request.stream:
         # TODO: Handle n > 1 for streaming if stream_generate_text_util is adapted for it.
         if request.n is not None and request.n > 1:
@@ -274,6 +288,159 @@ async def create_completion(request: CompletionRequest):
             # Handle other exceptions that might be set on the future by the worker
             logging.error(f"Error processing request from queue for model {request.model}: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
+
+async def _compute_completion_with_logprobs(
+    model_instance: nn.Module,
+    tokenizer_instance: TokenizerWrapper,
+    model_id: str,
+    request: CompletionRequest,
+):
+    # Tokenize prompt
+    enc = tokenizer_instance._tokenizer([request.prompt], return_tensors="np", padding=False)
+    prompt_ids = enc["input_ids"]
+    prompt_mx = mx.array(prompt_ids)
+    B, L = prompt_mx.shape
+    assert B == 1
+
+    max_tokens = request.max_tokens
+    temperature = request.temperature
+    top_p = request.top_p
+    topk = int(request.logprobs) if request.logprobs else 0
+
+    # Echo: compute prompt token logprobs (teacher-forcing)
+    echo_tokens = []
+    echo_token_logprobs = []
+    echo_top_logprobs = []
+    if request.echo:
+        logits_full = model_instance(prompt_mx)  # (1, L, V)
+        toks = prompt_ids[0].tolist()
+        for i in range(L - 1):
+            logits_i = logits_full[:, i, :]
+            # Apply logit_bias if provided
+            if request.logit_bias:
+                for k, v in request.logit_bias.items():
+                    try:
+                        tid = int(k)
+                    except ValueError:
+                        tid = tokenizer_instance._tokenizer.convert_tokens_to_ids(k)
+                    if tid is not None and tid >= 0:
+                        logits_i[:, tid] = logits_i[:, tid] + float(v)
+            if temperature and temperature > 0:
+                logits_i = logits_i * (1.0 / temperature)
+            probs_i = mx.softmax(logits_i, axis=-1)
+            token_id = int(prompt_mx[0, i + 1].item())
+            lp = float(mx.log(probs_i[0, token_id]).item())
+            echo_tokens.append(tokenizer_instance._tokenizer.convert_ids_to_tokens([toks[i + 1]])[0])
+            echo_token_logprobs.append(lp)
+            if topk > 0:
+                pi = np.array(probs_i[0])
+                idx = pi.argsort()[::-1][:topk]
+                echo_top_logprobs.append({
+                    tokenizer_instance._tokenizer.convert_ids_to_tokens([int(j)])[0]: float(np.log(pi[j]))
+                    for j in idx
+                })
+
+    # Generate with per-step logprobs
+    y = prompt_mx
+    generated_ids = []
+    gen_token_logprobs = []
+    gen_top_logprobs = []
+    for _ in range(max_tokens):
+        logits = model_instance(y)
+        logits_last = logits[:, -1, :]
+        # Apply logit_bias if provided
+        if request.logit_bias:
+            for k, v in request.logit_bias.items():
+                try:
+                    tid = int(k)
+                except ValueError:
+                    tid = tokenizer_instance._tokenizer.convert_tokens_to_ids(k)
+                if tid is not None and tid >= 0:
+                    logits_last[:, tid] = logits_last[:, tid] + float(v)
+        logits_sample = logits_last * (1.0 / temperature) if (temperature and temperature > 0) else logits_last
+        probs = mx.softmax(logits_sample, axis=-1)
+        if top_p is not None and 0.0 < top_p < 1.0:
+            token = top_p_sampling(logits_sample, top_p, temperature if temperature > 0 else 1.0)
+        else:
+            token = mx.argmax(logits_sample, axis=-1, keepdims=True)
+        tok_id = int(token[0, 0].item())
+        generated_ids.append(tok_id)
+        gen_token_logprobs.append(float(mx.log(probs[0, tok_id]).item()))
+        if topk > 0:
+            pi = np.array(probs[0])
+            idx = pi.argsort()[::-1][:topk]
+            gen_top_logprobs.append({
+                tokenizer_instance._tokenizer.convert_ids_to_tokens([int(j)])[0]: float(np.log(pi[j]))
+                for j in idx
+            })
+        y = mx.concatenate([y, token], axis=1)
+        if tok_id == tokenizer_instance.eos_token_id:
+            break
+
+    # Assemble text
+    gen_text = tokenizer_instance._tokenizer.decode(generated_ids)
+    full_text = (request.prompt + gen_text) if request.echo else gen_text
+
+    # Build logprobs object if requested
+    logprobs_obj = None
+    if topk > 0:
+        if request.echo:
+            tokens = echo_tokens + tokenizer_instance._tokenizer.convert_ids_to_tokens(generated_ids)
+            token_logprobs = echo_token_logprobs + gen_token_logprobs
+            top_logprobs = echo_top_logprobs + gen_top_logprobs
+        else:
+            tokens = tokenizer_instance._tokenizer.convert_ids_to_tokens(generated_ids)
+            token_logprobs = gen_token_logprobs
+            top_logprobs = gen_top_logprobs
+        logprobs_obj = {
+            "tokens": tokens,
+            "token_logprobs": token_logprobs,
+            "top_logprobs": top_logprobs,
+            "text_offset": [0] * len(tokens),
+        }
+
+    usage = CompletionUsage(
+        prompt_tokens=int(prompt_mx.shape[1]),
+        completion_tokens=len(generated_ids),
+        total_tokens=int(prompt_mx.shape[1]) + len(generated_ids),
+    )
+
+    choice = CompletionChoice(text=full_text, index=0, logprobs=logprobs_obj, finish_reason="stop")
+    return CompletionResponse(model=model_id, choices=[choice], usage=usage)
+
+@app.post("/v1/perplexity", response_model=PerplexityResponse, tags=["Analysis"])
+async def compute_perplexity(request: PerplexityRequest):
+    model_id = request.model
+    if model_id not in model_registry:
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found or not loaded.")
+    rec = model_registry[model_id]
+    if rec.status != ModelStatus.LOADED or rec.model_instance is None or rec.tokenizer_instance is None:
+        raise HTTPException(status_code=409, detail=f"Model '{model_id}' is not ready for perplexity.")
+
+    model_instance = rec.model_instance
+    tok = rec.tokenizer_instance
+    if not isinstance(tok, TokenizerWrapper):
+        tok = TokenizerWrapper(tok)
+
+    enc = tok._tokenizer([request.text], return_tensors="np", padding=False)
+    ids = enc["input_ids"][0].tolist()
+    if len(ids) < 2:
+        return PerplexityResponse(model=model_id, token_count=0, avg_nll=0.0, ppl=1.0)
+    x = mx.array([ids])
+    logits = model_instance(x)  # (1, T, V)
+    T = logits.shape[1]
+    logprobs = []
+    for i in range(T - 1):
+        li = logits[:, i, :]  # (1, V)
+        pi = mx.softmax(li, axis=-1)
+        tgt = int(x[0, i + 1].item())
+        lp = float(mx.log(pi[0, tgt]).item())
+        logprobs.append(lp)
+    if not logprobs:
+        return PerplexityResponse(model=model_id, token_count=0, avg_nll=0.0, ppl=1.0)
+    avg_nll = -sum(logprobs) / len(logprobs)
+    ppl = math.exp(avg_nll)
+    return PerplexityResponse(model=model_id, token_count=len(logprobs), avg_nll=avg_nll, ppl=ppl)
 
 async def _chat_completion_stream_generator(
     request: ChatCompletionRequest,

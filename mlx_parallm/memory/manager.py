@@ -3,6 +3,7 @@
 from typing import Dict, Optional, Union
 from .base import MemoryBackend
 from .faiss_backend import FAISSMemoryBackend
+from .manual_backend import ManualMemoryBackend
 
 
 class MemoryManager:
@@ -25,6 +26,8 @@ class MemoryManager:
         """Initialize the default backend."""
         if self.default_backend == "faiss":
             self.backends["faiss"] = FAISSMemoryBackend(self.embedding_dim)
+        elif self.default_backend == "manual":
+            self.backends["manual"] = ManualMemoryBackend(self.embedding_dim)
         else:
             raise ValueError(f"Unknown backend type: {self.default_backend}")
     
@@ -43,6 +46,8 @@ class MemoryManager:
         if backend_type not in self.backends:
             if backend_type == "faiss":
                 self.backends[backend_type] = FAISSMemoryBackend(self.embedding_dim)
+            elif backend_type == "manual":
+                self.backends[backend_type] = ManualMemoryBackend(self.embedding_dim)
             else:
                 raise ValueError(f"Unknown backend type: {backend_type}")
         

@@ -84,7 +84,7 @@ class CompletionUsage(BaseModel):
 class CompletionChoice(BaseModel):
     text: str
     index: int = 0
-    logprobs: Optional[Any] = None  # Placeholder for now, OpenAI has a specific LogProbs schema
+    logprobs: Optional[Any] = None  # Structure: {tokens, token_logprobs, top_logprobs, text_offset}
     finish_reason: Optional[Literal["stop", "length"]] = "stop"
 
 class CompletionResponse(BaseModel):
@@ -103,7 +103,11 @@ class CompletionRequest(BaseModel):
     top_p: float = Field(1.0, description="Nucleus sampling parameter.", ge=0.0, le=1.0)
     stream: Optional[bool] = Field(False, description="Whether to stream back partial progress.")
     n: Optional[int] = Field(1, description="How many completions to generate for each prompt.")
-    # logprobs: Optional[int] = Field(None, description="Include the log probabilities on the logprobs most likely tokens.") # For later
+    logprobs: Optional[int] = Field(None, description="Include the log probabilities on the logprobs most likely tokens.")
+    echo: Optional[bool] = Field(False, description="Echo back the prompt in addition to the completion.")
+    logit_bias: Optional[Dict[str, float]] = Field(
+        None,
+        description="Map of token (string or id) to bias added to its logit.")
     # stop: Optional[Union[str, List[str]]] = Field(None, description="Up to 4 sequences where the API will stop generating further tokens.") # For later
     # presence_penalty: float = Field(0.0, ge=-2.0, le=2.0) # For later
     # frequency_penalty: float = Field(0.0, ge=-2.0, le=2.0) # For later
@@ -170,3 +174,15 @@ class ChatCompletionChunk(BaseModel):
 # Need to import these for ModelPermission if re-enabled or CompletionResponse ID generation
 import random
 import string 
+
+# ---- Perplexity Schemas ----
+
+class PerplexityRequest(BaseModel):
+    model: str = Field(..., description="ID of the model to use for computing perplexity.")
+    text: str = Field(..., description="Raw text to evaluate (no chat templating).")
+
+class PerplexityResponse(BaseModel):
+    model: str
+    token_count: int
+    avg_nll: float
+    ppl: float

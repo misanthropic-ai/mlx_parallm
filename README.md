@@ -69,6 +69,79 @@ mlx_parallm_serve --model-path mistralai/Mistral-7B-Instruct-v0.1 --port 8000
 This will start the Uvicorn server with the FastAPI application. You can then access the API endpoints, for example, the health check:
 `http://127.0.0.1:8000/health` (assuming default host and port 8000).
 
+## Server API: Completions + Logprobs
+
+- Text completions (non-streamed):
+  ```bash
+  curl -s http://127.0.0.1:8000/v1/completions \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "model": "<your_model_id>",
+      "prompt": "Say hello in one sentence.",
+      "max_tokens": 16,
+      "temperature": 0.7,
+      "top_p": 1.0
+    }'
+  ```
+
+- Token logprobs and echo (OpenAI-style):
+  ```bash
+  curl -s http://127.0.0.1:8000/v1/completions \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "model": "<your_model_id>",
+      "prompt": "Say hello in one sentence.",
+      "max_tokens": 8,
+      "temperature": 0.0,
+      "logprobs": 5,
+      "echo": true
+    }'
+  ```
+  - Response includes `choices[0].logprobs` with `tokens`, `token_logprobs`, `top_logprobs`, `text_offset`.
+
+### Raw Completions vs Chat
+
+- `/v1/completions` is raw: it does not add chat roles or special tokens. Your `prompt` is used as-is.
+- `/v1/chat/completions` applies the tokenizer's chat template and inserts role tokens automatically.
+  Use this for assistant-style chat; use `/v1/completions` when you want precise control over the input sequence.
+
+## Perplexity via Logprobs (Quick Start)
+
+- You can approximate perplexity by summing negative log probabilities of the target text. Use `echo: true` to get logprobs over prompt tokens.
+
+- Example (token logprobs over a prompt):
+  ```bash
+  curl -s http://127.0.0.1:8000/v1/completions \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "model": "<your_model_id>",
+      "prompt": "Alexander Grothendieck became a French citizen in 1971.",
+      "max_tokens": 1,
+      "temperature": 0.0,
+      "logprobs": 5,
+      "echo": true
+    }' | jq '.choices[0].logprobs'
+  ```
+  - Sum `-token_logprobs` to get negative log-likelihood; divide by token count to get average NLL; exponentiate for perplexity.
+
+- Python sketch:
+  ```python
+  import requests, math
+  data = {
+      "model": "<your_model_id>",
+      "prompt": "some text...",
+      "max_tokens": 1,      # minimal generation; echo provides prompt logprobs
+      "temperature": 0.0,
+      "logprobs": 5,
+      "echo": True,
+  }
+  r = requests.post("http://127.0.0.1:8000/v1/completions", json=data).json()
+  lps = r["choices"][0]["logprobs"]["token_logprobs"]
+  avg_nll = -sum(lps)/len(lps)
+  ppl = math.exp(avg_nll)
+  print({"avg_nll": avg_nll, "ppl": ppl})
+  ```
+
 ## Dependency Management
 
 This project uses `pyproject.toml` as the single source of truth for dependencies, managed with `uv`.
@@ -97,6 +170,14 @@ This project uses `pyproject.toml` as the single source of truth for dependencie
 ## Development
 
 (Details about development workflows, running tests, etc., will be added here as the project progresses.)
+
+## Extended Mind Testing
+
+- A convenience script runs several Extended Mind configs (strict path, layers, masking):
+  ```bash
+  python scripts/test_extended_mind_variants.py --model mlx-community/Llama-3.2-3B-Instruct-4bit
+  ```
+  This prints load times and generated outputs for quick inspection. Use it to iterate on memory settings.
 
 ## Contributing
 

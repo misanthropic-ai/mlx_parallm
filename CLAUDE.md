@@ -112,3 +112,90 @@ For gated/private models:
 - Multimodal (vision) support
 - Distributed operation with MLX
 - Performance optimizations and quantization improvements
+
+## Extended Mind Transformers Integration
+
+### Overview
+We've implemented Extended Mind Transformers (EMT) in mlx_parallm, allowing LLMs to access external memories during generation without fine-tuning. This enables RAG-like capabilities with better integration into the model's attention mechanism.
+
+### Implementation Status
+- ✅ Core architecture implemented (`mlx_parallm/models/llama_extended.py`)
+- ✅ Memory backend system with FAISS support (`mlx_parallm/memory/`)
+- ✅ Model loading with `--use-extended-mind` flag
+- ✅ Memory addition and retrieval working
+- ⚠️ Generation with memories produces incorrect output (exclamation marks)
+- ❌ API endpoints for memory management not yet implemented
+
+### Key Components
+
+#### Memory Backend System (`mlx_parallm/memory/`)
+- **MemoryManager**: Central manager for memory backends
+- **MemoryBackend**: Abstract interface for memory storage
+- **FAISSBackend**: FAISS-based vector similarity search
+  - Per-head memory indexing for grouped query attention
+  - Cosine similarity search with top-k retrieval
+  - Support for layer-specific memories
+
+#### Extended Model Classes
+- **ExtendedModelArgs**: Configuration with memory parameters
+- **ExtendedAttention**: Attention with memory retrieval
+  - Retrieves top-k memories per query position
+  - Separate attention computation for memories vs cached values
+  - Handles BatchedKVCache integration
+- **ExtendedTransformerBlock**: Transformer block using ExtendedAttention
+- **ExtendedLlamaModel**: Model with memory manager
+- **ExtendedModel**: Wrapper with memory management methods
+
+#### Memory Flow
+1. Add memories via `model.add_memories(tokens)`
+   - Tokens embedded and passed through layers
+   - Keys/values extracted and stored in backend
+2. During generation:
+   - Queries normalized and searched against memory
+   - Top-k memories retrieved per attention head
+   - Memory scores computed separately
+   - Combined with regular attention
+
+### Current Issues
+
+#### BatchedKVCache Integration
+The main issue is handling the dimension mismatch between:
+- Memory values: shape `(B, n_heads, L * topk, head_dim)` for current queries
+- Cached values: shape `(B, n_heads, total_cached_seq_len, head_dim)`
+
+We implemented separate attention computation for memories vs cached values, but generation still produces incorrect output.
+
+#### RoPE Handling
+- Fixed to support both Llama 2 style (`"type": "linear"`) and Llama 3 style (`"rope_type": "llama3"`)
+- Llama 3.2 models use `rope_type` field instead of `type`
+- No scaling applied for `rope_type: "llama3"`
+
+### Usage Example
+```python
+# Load model with extended mind
+model, tokenizer = load('mlx-community/Llama-3.2-3B-Instruct-4bit', use_extended_mind=True)
+model.set_model_id('my-model')
+
+# Add memories
+memory_text = "Alexander Grothendieck became a French citizen in 1971."
+tokens = tokenizer.encode(memory_text)
+model.add_memories(mx.array(tokens))
+
+# Generate with memory access
+prompt = "When did Grothendieck get French citizenship?"
+response = generate(model, tokenizer, prompt)
+```
+
+### Next Steps
+1. Fix generation issue with memory-augmented attention
+2. Add API endpoints for memory management:
+   - POST `/v1/models/{model_id}/memories`
+   - GET `/v1/models/{model_id}/memories`
+   - DELETE `/v1/models/{model_id}/memories`
+3. Implement other memory backends (Redis, Neo4j, SQL)
+4. Add memory parameters to completion request schemas
+5. Performance optimization and testing
+
+### References
+- Extended Mind Transformers paper: https://arxiv.org/abs/2406.02332
+- Reference implementation: https://github.com/normal-computing/extended-mind-transformers
