@@ -29,12 +29,16 @@ class ModelArgs(BaseModelArgs):
             self.num_key_value_heads = self.num_attention_heads
 
         if self.rope_scaling:
-            required_keys = {"factor", "type"}
-            if not all(key in self.rope_scaling for key in required_keys):
-                raise ValueError(f"rope_scaling must contain keys {required_keys}")
-
-            if self.rope_scaling["type"] != "linear":
-                raise ValueError("rope_scaling 'type' currently only supports 'linear'")
+            if "factor" not in self.rope_scaling:
+                raise ValueError("rope_scaling must contain 'factor'")
+            
+            # Check for either 'type' or 'rope_type'
+            if "type" in self.rope_scaling:
+                if self.rope_scaling["type"] != "linear":
+                    raise ValueError("rope_scaling 'type' currently only supports 'linear'")
+            elif "rope_type" in self.rope_scaling:
+                if self.rope_scaling["rope_type"] not in ["llama3", "linear"]:
+                    raise ValueError(f"rope_scaling 'rope_type' {self.rope_scaling['rope_type']} not supported")
 
 
 class Attention(nn.Module):
@@ -57,11 +61,14 @@ class Attention(nn.Module):
         self.v_proj = nn.Linear(dim, n_kv_heads * head_dim, bias=attention_bias)
         self.o_proj = nn.Linear(n_heads * head_dim, dim, bias=attention_bias)
 
-        rope_scale = (
-            1 / args.rope_scaling["factor"]
-            if args.rope_scaling is not None and args.rope_scaling["type"] == "linear"
-            else 1
-        )
+        rope_scale = 1
+        if args.rope_scaling is not None:
+            if "type" in args.rope_scaling and args.rope_scaling["type"] == "linear":
+                rope_scale = 1 / args.rope_scaling["factor"]
+            elif "rope_type" in args.rope_scaling:
+                if args.rope_scaling["rope_type"] == "linear":
+                    rope_scale = 1 / args.rope_scaling["factor"]
+                # For llama3 rope_type, we don't scale
         self.rope = nn.RoPE(
             head_dim,
             traditional=args.rope_traditional,
@@ -74,6 +81,7 @@ class Attention(nn.Module):
         x: mx.array,
         mask: Optional[mx.array] = None,
         cache: Optional[BatchedKVCache] = None,
+        return_preproj: bool = False,
     ) -> mx.array:
         B, L, D = x.shape
 
@@ -85,9 +93,14 @@ class Attention(nn.Module):
         values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
 
         if cache is not None:
-            queries = self.rope(queries, offset=cache.offset)
-            keys = self.rope(keys, offset=cache.offset)
+            # Update cache with un-RoPE'd K/V then apply RoPE to queries/keys
+            # Cache.offset after update equals previous length + current L
+            prev_offset = cache.offset
             keys, values = cache.update_and_fetch(keys, values)
+            # Apply RoPE to queries using previous offset
+            queries = self.rope(queries, offset=prev_offset)
+            # Apply RoPE across the whole KV sequence
+            keys = self.rope(keys)
         else:
             queries = self.rope(queries)
             keys = self.rope(keys)
@@ -95,8 +108,11 @@ class Attention(nn.Module):
         output = mx.fast.scaled_dot_product_attention(
             queries, keys, values, scale=self.scale, mask=mask
         )
-        output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
-        return self.o_proj(output)
+        preproj = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
+        out = self.o_proj(preproj)
+        if return_preproj:
+            return out, preproj
+        return out
 
 
 class MLP(nn.Module):
