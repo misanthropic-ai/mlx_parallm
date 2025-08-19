@@ -46,20 +46,19 @@ class ManualMemoryBackend(MemoryBackend):
         if model_id not in self.store:
             raise ValueError(f"No memories found for model {model_id}")
 
-        # Convert to numpy for convenience
-        queries_np = np.array(queries)  # (B, H, L, D)
-        mem_k = np.array(self.store[model_id]["memory_keys"])  # (N, n_kv_heads, D)
-        mem_v = np.array(self.store[model_id]["memory_values"])  # (N, n_kv_heads, D)
+        q = queries  # (B, H, L, D)
+        mem_k = self.store[model_id]["memory_keys"]  # (N, n_kv_heads, D)
+        mem_v = self.store[model_id]["memory_values"]  # (N, n_kv_heads, D)
 
-        B, H, L, D = queries_np.shape
+        B, H, L, D = q.shape
         N, n_kv_heads, Dk = mem_k.shape
-        assert D == Dk, f"Query dim {D} != memory dim {Dk}"
+        if D != Dk:
+            raise ValueError(f"Query dim {D} != memory dim {Dk}")
 
         # Normalize
-        qn = queries_np / (np.linalg.norm(queries_np, axis=-1, keepdims=True) + 1e-8)
-        mk = mem_k / (np.linalg.norm(mem_k, axis=-1, keepdims=True) + 1e-8)
+        qn = q / (mx.linalg.norm(q, axis=-1, keepdims=True) + 1e-8)
+        mk = mem_k / (mx.linalg.norm(mem_k, axis=-1, keepdims=True) + 1e-8)
 
-        # Allocate outputs
         selected_keys_heads = []
         selected_values_heads = []
         similarities_heads = []
@@ -67,36 +66,34 @@ class ManualMemoryBackend(MemoryBackend):
 
         for h in range(H):
             kv_h = h % n_kv_heads
-            mk_h = mk[:, kv_h, :]  # (N, D) normalized for search
-            rk_h = mem_k[:, kv_h, :]  # (N, D) raw keys for scoring
-            q_h = qn[:, h, :, :]    # (B, L, D)
+            mk_h = mk[:, kv_h, :]            # (N, D) normalized for search
+            rk_h = mem_k[:, kv_h, :]         # (N, D) raw keys for scoring
+            rv_h = mem_v[:, kv_h, :]         # (N, D) raw values
+            q_h = qn[:, h, :, :]             # (B, L, D)
 
-            # (B*L, D) @ (D, N) -> (B*L, N)
-            q2 = q_h.reshape(B * L, D)
-            sims = q2 @ mk_h.T
+            sims = mx.matmul(q_h.reshape(B * L, D), mk_h.T)  # (B*L, N)
+            tk = min(topk, N)
+            # argsort descending and take top-k
+            order = mx.argsort(-sims, axis=1)
+            idx_sorted = order[:, :tk]  # (B*L, tk)
+            # Gather top-k similarity values per row
+            row_indices = mx.arange(B * L).reshape(B * L, 1)
+            vals = sims[row_indices, idx_sorted]
 
-            # topk along N
-            if topk > N:
-                tk = N
-            else:
-                tk = topk
+            # Gather keys/values per row using loops (row-wise indices)
+            sel_k_list = []
+            sel_v_list = []
+            for r in range(B * L):
+                idx_row = idx_sorted[r]
+                sel_k_list.append(mx.take(rk_h, idx_row, axis=0))
+                sel_v_list.append(mx.take(rv_h, idx_row, axis=0))
+            sel_k = mx.stack(sel_k_list, axis=0)  # (B*L, tk, D)
+            sel_v = mx.stack(sel_v_list, axis=0)  # (B*L, tk, D)
 
-            idx = np.argpartition(-sims, kth=tk-1, axis=1)[:, :tk]
-            # Sort top-k for stability
-            row_idx = np.arange(idx.shape[0])[:, None]
-            part = sims[row_idx, idx]
-            order = np.argsort(-part, axis=1)
-            idx_sorted = idx[row_idx, order]
-            val_sorted = part[row_idx, order]
-
-            # Gather keys/values
-            sel_k = rk_h[idx_sorted]  # (B*L, tk, D) use raw keys, not normalized
-            sel_v = mem_v[:, kv_h, :][idx_sorted]  # (B*L, tk, D)
-
-            # Reshape to (B, L, tk, D)
+            # Reshape to (B, L, tk, D) and vals to (B, L, tk)
             sel_k = sel_k.reshape(B, L, tk, D)
             sel_v = sel_v.reshape(B, L, tk, D)
-            vals = val_sorted.reshape(B, L, tk)
+            vals = vals.reshape(B, L, tk)
             ids = idx_sorted.reshape(B, L, tk)
 
             selected_keys_heads.append(sel_k)
@@ -104,18 +101,17 @@ class ManualMemoryBackend(MemoryBackend):
             similarities_heads.append(vals)
             indices_heads.append(ids)
 
-        # Stack heads -> (B, H, L, tk, D)
-        selected_keys = np.stack(selected_keys_heads, axis=1)
-        selected_values = np.stack(selected_values_heads, axis=1)
-        similarities = np.stack(similarities_heads, axis=1)
-        indices = np.stack(indices_heads, axis=1)
+        selected_keys = mx.stack(selected_keys_heads, axis=1)     # (B, H, L, tk, D)
+        selected_values = mx.stack(selected_values_heads, axis=1) # (B, H, L, tk, D)
+        similarities = mx.stack(similarities_heads, axis=1)       # (B, H, L, tk)
+        indices = mx.stack(indices_heads, axis=1)                 # (B, H, L, tk)
 
         # Reshape keys/values to (B, H, L*tk, D)
         Bn, Hn, Ln, TKn, Dn = selected_keys.shape
         selected_keys = selected_keys.reshape(Bn, Hn, Ln * TKn, Dn)
         selected_values = selected_values.reshape(Bn, Hn, Ln * TKn, Dn)
 
-        return mx.array(selected_keys), mx.array(selected_values), mx.array(similarities), mx.array(indices)
+        return selected_keys, selected_values, similarities, indices
 
     def clear(self, model_id: str) -> None:
         if model_id in self.store:
@@ -133,3 +129,8 @@ class ManualMemoryBackend(MemoryBackend):
 
     def memory_exists(self, model_id: str) -> bool:
         return model_id in self.store
+
+    def get_all(self, model_id: str) -> Tuple[mx.array, mx.array]:
+        if model_id not in self.store:
+            raise ValueError(f"No memories found for model {model_id}")
+        return self.store[model_id]["memory_keys"], self.store[model_id]["memory_values"]

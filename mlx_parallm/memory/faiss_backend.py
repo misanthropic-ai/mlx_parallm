@@ -65,7 +65,7 @@ class FAISSMemoryBackend(MemoryBackend):
             head_keys = keys_normalized[:, head_idx, :]  # (num_memories, head_dim)
             self.indexes[model_id]['faiss_indexes'][head_idx].add(head_keys.astype(np.float32))
         
-        # Store original keys and values
+        # Store original keys and values (as MLX arrays, n_kv_heads, no RoPE)
         self.indexes[model_id]['memory_keys'].append(memory_keys)
         self.indexes[model_id]['memory_values'].append(memory_values)
         

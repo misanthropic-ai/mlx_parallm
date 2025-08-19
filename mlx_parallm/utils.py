@@ -42,7 +42,7 @@ class ModelNotFoundError(Exception):
         super().__init__(self.message)
 
 
-def _get_classes(config: dict, use_extended_mind: bool = False):
+def _get_classes(config: dict, use_extended_mind: bool = False, use_mega: bool = False):
     """
     Retrieve the model and model args classes based on the configuration.
 
@@ -63,6 +63,14 @@ def _get_classes(config: dict, use_extended_mind: bool = False):
             return arch.ExtendedModel, arch.ExtendedModelArgs
         except ImportError:
             logging.warning("Extended mind variant not available for llama, falling back to standard")
+
+    # Check if we should use MEGa variant
+    if use_mega and model_type == "llama":
+        try:
+            arch = importlib.import_module(f"mlx_parallm.models.llama_mega")
+            return arch.MEGaModel, arch.MEGaModelArgs
+        except ImportError:
+            logging.warning("MEGa variant not available for llama, falling back to standard")
     
     try:
         arch = importlib.import_module(f"mlx_parallm.models.{model_type}")
@@ -113,6 +121,34 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
                 "     (Details: https://huggingface.co/docs/huggingface_hub/en/guides/cli#huggingface-cli-login)"
             ) from None
     return model_path
+
+
+def load_model_and_tokenizer(
+    path_or_hf_repo: str,
+    *,
+    revision: Optional[str] = None,
+    use_extended_mind: bool = False,
+    use_mega: bool = False,
+    model_config: dict = {},
+):
+    """Load a model and tokenizer from HF or local path.
+
+    Args:
+        path_or_hf_repo: HF repo id or local path.
+        revision: Optional revision.
+        use_extended_mind: If True and model supports it, load Extended Mind.
+        use_mega: If True and model supports it, load MEGa.
+        model_config: Optional overrides to config.json prior to init.
+
+    Returns:
+        (model, tokenizer)
+    """
+    model_path = get_model_path(path_or_hf_repo, revision=revision)
+    # Build model
+    model = load_model(model_path, lazy=False, model_config=model_config, use_extended_mind=use_extended_mind, use_mega=use_mega)
+    # Tokenizer
+    tokenizer = load_tokenizer(model_path)
+    return model, tokenizer
 
 
 def apply_repetition_penalty(logits: mx.array, generated_tokens: Any, penalty: float):
@@ -448,6 +484,7 @@ def load_model(
     lazy: bool = False,
     model_config: dict = {},
     use_extended_mind: bool = False,
+    use_mega: bool = False,
 ) -> nn.Module:
     """
     Load and initialize the model from a given path.
@@ -487,7 +524,9 @@ def load_model(
     for wf in weight_files:
         weights.update(mx.load(wf))
 
-    model_class, model_args_class = _get_classes(config=config, use_extended_mind=use_extended_mind)
+    model_class, model_args_class = _get_classes(
+        config=config, use_extended_mind=use_extended_mind, use_mega=use_mega
+    )
 
     model_args = model_args_class.from_dict(config)
     model = model_class(model_args)
@@ -508,7 +547,17 @@ def load_model(
             class_predicate=class_predicate,
         )
 
-    model.load_weights(list(weights.items()))
+    # Filter unknown parameters to avoid mismatches from quantization variants
+    try:
+        param_tree = dict(tree_flatten(model.parameters()))
+        filtered = {k: v for k, v in weights.items() if k in param_tree}
+        missing = len(weights) - len(filtered)
+        if missing > 0:
+            logging.warning(f"Filtering out {missing} unmatched weight tensors during load.")
+        model.load_weights(list(filtered.items()))
+    except Exception:
+        # Fallback to original behavior
+        model.load_weights(list(weights.items()))
 
     if not lazy:
         mx.eval(model.parameters())

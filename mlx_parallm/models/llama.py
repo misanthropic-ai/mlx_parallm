@@ -81,6 +81,7 @@ class Attention(nn.Module):
         x: mx.array,
         mask: Optional[mx.array] = None,
         cache: Optional[BatchedKVCache] = None,
+        return_preproj: bool = False,
     ) -> mx.array:
         B, L, D = x.shape
 
@@ -92,9 +93,14 @@ class Attention(nn.Module):
         values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
 
         if cache is not None:
-            queries = self.rope(queries, offset=cache.offset)
-            keys = self.rope(keys, offset=cache.offset)
+            # Update cache with un-RoPE'd K/V then apply RoPE to queries/keys
+            # Cache.offset after update equals previous length + current L
+            prev_offset = cache.offset
             keys, values = cache.update_and_fetch(keys, values)
+            # Apply RoPE to queries using previous offset
+            queries = self.rope(queries, offset=prev_offset)
+            # Apply RoPE across the whole KV sequence
+            keys = self.rope(keys)
         else:
             queries = self.rope(queries)
             keys = self.rope(keys)
@@ -102,8 +108,11 @@ class Attention(nn.Module):
         output = mx.fast.scaled_dot_product_attention(
             queries, keys, values, scale=self.scale, mask=mask
         )
-        output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
-        return self.o_proj(output)
+        preproj = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
+        out = self.o_proj(preproj)
+        if return_preproj:
+            return out, preproj
+        return out
 
 
 class MLP(nn.Module):

@@ -19,17 +19,11 @@ class ExtendedModelArgs(LlamaModelArgs):
     # Memory configuration
     use_external_mind: bool = True
     use_external_mind_by_layer: Optional[List[bool]] = None
-    memory_topk: int = 10
-    mask_by_sim: bool = False
+    memory_topk: int = 2
+    mask_by_sim: bool = True
     sim_threshold: float = 0.25
-    memory_backend: str = "faiss"
+    memory_backend: str = "manual"
     remove_special_tokens: bool = True
-    memory_alpha: float = 1.0
-    debug_extended: bool = False
-    memory_value_alpha: float = 1.0
-    memory_weight_cap: float = 1.0
-    memory_calibrate: bool = True
-    strict_in_attention: bool = False
     
     def __post_init__(self):
         super().__post_init__()
@@ -77,12 +71,6 @@ class ExtendedAttention(nn.Module):
         self.memory_topk = args.memory_topk
         self.mask_by_sim = args.mask_by_sim
         self.sim_threshold = args.sim_threshold
-        self.memory_alpha = getattr(args, "memory_alpha", 1.0)
-        self.memory_value_alpha = getattr(args, "memory_value_alpha", 1.0)
-        self.debug_extended = getattr(args, "debug_extended", False)
-        self.memory_weight_cap = getattr(args, "memory_weight_cap", 1.0)
-        self.memory_calibrate = getattr(args, "memory_calibrate", True)
-        self.strict_in_attention = getattr(args, "strict_in_attention", False)
         
     def _repeat_kv(self, hidden_states: mx.array, n_rep: int) -> mx.array:
         """Repeat key/value heads to match number of query heads."""
@@ -95,10 +83,14 @@ class ExtendedAttention(nn.Module):
     
     def _create_memory_mask(self, topk: int, seq_len: int, dtype) -> mx.array:
         """Create mask for external memories where queries only attend to their own memories."""
+        # Create mask in the requested dtype
         mask = mx.ones((seq_len, seq_len * topk), dtype=dtype)
         for i in range(seq_len):
             mask[i, i * topk:(i + 1) * topk] = 0
-        return mask * (-1e9)
+        # Apply large negative value to mask out positions
+        # Use -10000 instead of -1e9 to avoid overflow in float16
+        mask = mask * (-10000.0)
+        return mask
     
     def __call__(
         self,
@@ -109,7 +101,6 @@ class ExtendedAttention(nn.Module):
         model_id: Optional[str] = None,
         layer_idx: Optional[int] = None,
         output_retrieved_memory_idx: bool = False,
-        parent_model: Optional["ExtendedLlamaModel"] = None,
     ) -> Tuple[mx.array, Optional[mx.array]]:
         B, L, D = x.shape
         
@@ -120,11 +111,12 @@ class ExtendedAttention(nn.Module):
         keys = keys.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
         values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
         
-        # Apply RoPE
+        # Apply RoPE with pre-cache update semantics (align with reference)
         if cache is not None:
-            queries = self.rope(queries, offset=cache.offset)
-            keys = self.rope(keys, offset=cache.offset)
+            prev_offset = cache.offset
             keys, values = cache.update_and_fetch(keys, values)
+            queries = self.rope(queries, offset=prev_offset)
+            keys = self.rope(keys)
         else:
             queries = self.rope(queries)
             keys = self.rope(keys)
@@ -135,134 +127,83 @@ class ExtendedAttention(nn.Module):
             keys = self._repeat_kv(keys, n_rep)
             values = self._repeat_kv(values, n_rep)
         
-        # Compute attention scores (local)
-        local_scores = (queries @ keys.transpose(0, 1, 3, 2)) * self.scale
-        scores = local_scores
-        had_memory = False
+        # Compute regular attention scores (with RoPE)
+        scores = (queries @ keys.transpose(0, 1, 3, 2)) * self.scale
         
-        # Extended Mind: Memory retrieval
+        # Extended Mind: Memory retrieval AFTER RoPE (like reference implementation)
         retrieved_indices = None
-        selected_keys = None
-        selected_values = None
-        similarities = None
-        if self.use_external_mind and model_id is not None:
-            # Strict in-module retrieval path
-            if getattr(self, 'strict_in_attention', False) and parent_model is not None and hasattr(parent_model, '_strict_memories') and layer_idx in parent_model._strict_memories:
-                kk, vv = parent_model._strict_memories[layer_idx]  # (n_kv_heads, N, D)
-                # Normalize queries for similarity
-                qn = queries / (mx.linalg.norm(queries, axis=-1, keepdims=True) + 1e-8)  # (B,H,L,D)
-                import numpy as _np
-                qn_np = _np.array(qn)
-                kk_np = _np.array(kk)
-                vv_np = _np.array(vv)
-                Bn, Hn, Ln, Dn = qn_np.shape
-                n_kv = kk_np.shape[0]
-                TK = self.memory_topk
-                sel_k_heads = []
-                sel_v_heads = []
-                sims_heads = []
-                idx_heads = []
-                for h in range(Hn):
-                    kv_h = h % n_kv
-                    MK = kk_np[kv_h]  # (N,D)
-                    MV = vv_np[kv_h]
-                    q2 = qn_np[:, h, :, :].reshape(Bn*Ln, Dn)
-                    s = q2 @ MK.T
-                    tk = min(TK, MK.shape[0])
-                    idx = _np.argpartition(-s, kth=tk-1, axis=1)[:, :tk]
-                    row = _np.arange(idx.shape[0])[:, None]
-                    part = s[row, idx]
-                    order = _np.argsort(-part, axis=1)
-                    idx_sorted = idx[row, order]
-                    val_sorted = part[row, order]
-                    sk = MK[idx_sorted].reshape(Bn, Ln, tk, Dn)
-                    sv = MV[idx_sorted].reshape(Bn, Ln, tk, Dn)
-                    sel_k_heads.append(sk)
-                    sel_v_heads.append(sv)
-                    sims_heads.append(val_sorted.reshape(Bn, Ln, tk))
-                    idx_heads.append(idx_sorted.reshape(Bn, Ln, tk))
-                selected_keys = _np.stack(sel_k_heads, axis=1)  # (B,H,L,tk,D)
-                selected_values = _np.stack(sel_v_heads, axis=1)
-                similarities = _np.stack(sims_heads, axis=1)  # (B,H,L,tk)
-                indices = _np.stack(idx_heads, axis=1)
-                selected_keys = mx.array(selected_keys.reshape(Bn, Hn, Ln*tk, Dn))
-                selected_values = mx.array(selected_values.reshape(Bn, Hn, Ln*tk, Dn))
-                similarities = mx.array(similarities)
-                indices = mx.array(indices)
-            else:
-                # Backend retrieval path
-                backend = memory_backend.get_backend()
-            # Use per-layer memory namespace to avoid cross-layer retrieval
-                layer_model_id = f"{model_id}__L{layer_idx}" if layer_idx is not None else model_id
-                if not (getattr(self, 'strict_in_attention', False) and parent_model is not None and hasattr(parent_model, '_strict_memories') and layer_idx in parent_model._strict_memories):
-                    if backend.memory_exists(layer_model_id):
-                        queries_norm = queries / (mx.linalg.norm(queries, axis=-1, keepdims=True) + 1e-8)
-                        selected_keys, selected_values, similarities, indices = backend.search(
-                            layer_model_id, queries_norm, self.memory_topk, layer_idx
-                        )
+        if self.use_external_mind and memory_backend is not None and model_id is not None:
+            backend = memory_backend.get_backend()
+            # Use layer-specific namespace for memory retrieval
+            layer_model_id = f"{model_id}__L{layer_idx}" if layer_idx is not None else model_id
+            if backend.memory_exists(layer_model_id):
+                # Normalize RoPE'd queries for similarity search
+                queries_norm = queries / (mx.linalg.norm(queries, axis=-1, keepdims=True) + 1e-8)
                 
-                # Compute attention scores with retrieved memories
-                if selected_keys is not None:
-                    memory_scores = (queries @ selected_keys.transpose(0, 1, 3, 2)) * self.scale
+                # Search for top-k memories (memories don't have RoPE)
+                # Backend returns: (B, n_heads, L*topk, head_dim) - already handles head repetition
+                selected_keys, selected_values, similarities, indices = backend.search(
+                    layer_model_id, queries_norm, self.memory_topk, layer_idx
+                )
+
+                # Some backends may return memories with n_kv_heads instead of n_heads.
+                # If so, repeat to match n_heads (Grouped Query Attention compatibility).
+                if selected_keys.shape[1] != self.n_heads:
+                    # Expect selected_* heads to equal n_kv_heads; repeat by n_rep
+                    if (self.n_heads % self.n_kv_heads) != 0:
+                        raise ValueError("n_heads must be a multiple of n_kv_heads for repetition")
+                    n_rep = self.n_heads // self.n_kv_heads
+                    # selected_* shapes: (B, n_kv_heads, L*topk, D)
+                    # Convert to (B, n_kv_heads, L*topk, D) explicitly and repeat along head axis
+                    Bk, Hk, LK, Hd = selected_keys.shape
+                    selected_keys = mx.expand_dims(selected_keys, 2)
+                    selected_keys = mx.tile(selected_keys, [1, 1, n_rep, 1, 1])
+                    selected_keys = selected_keys.reshape(Bk, Hk * n_rep, LK, Hd)
+                    Bv, Hv, LV, Hdv = selected_values.shape
+                    selected_values = mx.expand_dims(selected_values, 2)
+                    selected_values = mx.tile(selected_values, [1, 1, n_rep, 1, 1])
+                    selected_values = selected_values.reshape(Bv, Hv * n_rep, LV, Hdv)
+                    # Repeat similarities across heads if needed: (B, n_kv_heads, L, topk)
+                    if similarities is not None and similarities.shape[1] != self.n_heads:
+                        sims = similarities
+                        sims = mx.expand_dims(sims, 2)
+                        sims = mx.tile(sims, [1, 1, n_rep, 1, 1])
+                        similarities = sims.reshape(sims.shape[0], sims.shape[1] * n_rep, sims.shape[3], sims.shape[4])
+                
+                # Compute memory attention scores via dot product, matching reference flow
+                memory_scores = (queries @ selected_keys.transpose(0, 1, 3, 2)) * self.scale
                 
                 # Apply similarity masking if enabled
-                if self.mask_by_sim and similarities is not None and selected_keys is not None:
-                    # similarities: (B, H, L, topk)
-                    # Build a block-diagonal mask for memory_scores of shape (B, H, L, L*topk)
-                    sims_np = np.array(similarities)
-                    Bn, Hn, Ln, TK = sims_np.shape
-                    # mask True where we should mask (similarity < threshold)
-                    mask_blocks = (sims_np < self.sim_threshold)
-                    full_mask = np.ones((Bn, Hn, Ln, Ln * TK), dtype=bool)
-                    for i in range(Ln):
-                        full_mask[:, :, i, i * TK : (i + 1) * TK] = mask_blocks[:, :, i, :]
-                    full_mask_mx = mx.array(full_mask, dtype=memory_scores.dtype)
-                    memory_scores = memory_scores - full_mask_mx * 1e9
-
-                # Optionally calibrate memory score distribution to match local scores (masked moments)
-                if selected_keys is not None and self.memory_calibrate:
-                    eps = 1e-6
-                    # Local stats
-                    loc_mu = local_scores.mean(axis=-1, keepdims=True)
-                    loc_sigma = mx.sqrt(mx.maximum(0.0, local_scores.var(axis=-1, keepdims=True)))
-                    # Memory stats: if similarity mask exists, ignore masked positions
-                    if self.mask_by_sim and similarities is not None:
-                        sims_np = np.array(similarities)
-                        Bn, Hn, Ln, TK = sims_np.shape
-                        valid = (sims_np >= self.sim_threshold).astype(np.float32)
-                        full = np.zeros((Bn, Hn, Ln, Ln * TK), dtype=np.float32)
-                        for i in range(Ln):
-                            full[:, :, i, i * TK : (i + 1) * TK] = valid[:, :, i, :]
-                        valid_mx = mx.array(full, dtype=memory_scores.dtype)
-                        count = mx.maximum(valid_mx.sum(axis=-1, keepdims=True), eps)
-                        mem_mu = (memory_scores * valid_mx).sum(axis=-1, keepdims=True) / count
-                        diff = (memory_scores - mem_mu) * valid_mx
-                        mem_var = (diff * (memory_scores - mem_mu)).sum(axis=-1, keepdims=True) / count
-                        mem_sigma = mx.sqrt(mx.maximum(0.0, mem_var))
-                    else:
-                        mem_mu = memory_scores.mean(axis=-1, keepdims=True)
-                        mem_sigma = mx.sqrt(mx.maximum(0.0, memory_scores.var(axis=-1, keepdims=True)))
-                    # Z-score memory to local
-                    memory_scores = (memory_scores - mem_mu) / (mem_sigma + eps)
-                    memory_scores = memory_scores * (loc_sigma + eps) + loc_mu
-                # Scale memory contribution (overall)
-                if selected_keys is not None:
-                    memory_scores = memory_scores * self.memory_alpha
+                if self.mask_by_sim and similarities is not None:
+                    # similarities: (B, n_heads, L, topk) align to n_heads if needed
+                    sims = similarities
+                    if sims.shape[1] != self.n_heads:
+                        if (self.n_heads % sims.shape[1]) != 0:
+                            raise ValueError("Cannot align similarities heads to n_heads")
+                        rep = self.n_heads // sims.shape[1]
+                        sims = mx.expand_dims(sims, 2)
+                        sims = mx.tile(sims, [1, 1, rep, 1, 1])
+                        sims = sims.reshape(sims.shape[0], sims.shape[1] * rep, sims.shape[3], sims.shape[4])
+                    # Build mask in MLX: start from ones and fill per-position block
+                    sim_mask = mx.ones((B, self.n_heads, L, L * self.memory_topk), dtype=mx.bool_)
+                    for i in range(L):
+                        start_idx = i * self.memory_topk
+                        end_idx = (i + 1) * self.memory_topk
+                        cond = sims[:, :, i, :] < self.sim_threshold
+                        sim_mask[:, :, i, start_idx:end_idx] = cond
+                    sim_mask = sim_mask.astype(memory_scores.dtype)
+                    memory_scores = memory_scores - sim_mask * (10000.0 if memory_scores.dtype in (mx.float16, mx.bfloat16) else 1e9)
                 
-                # Concatenate memory scores before regular scores along key dimension
-                # memory_scores: (B, n_heads, L, L*topk), local_scores: (B, n_heads, L, kv_seq_len)
-                if selected_keys is not None:
-                    scores = mx.concatenate([memory_scores, local_scores], axis=-1)
-
-                # Concatenate memory values before regular values along sequence/key dimension
-                # selected_values: (B, n_heads, L*topk, head_dim), values: (B, n_heads, kv_seq_len, head_dim)
-                if selected_values is not None:
-                    values = mx.concatenate([selected_values, values], axis=2)
-                    had_memory = True
+                # Concatenate memory scores with regular scores
+                scores = mx.concatenate([memory_scores, scores], axis=-1)
                 
-                # Update mask to include memory mask only when memory is used
-                if mask is not None and selected_keys is not None:
-                    memory_mask = self._create_memory_mask(self.memory_topk, L, mask.dtype)
+                # Concatenate memory values with regular values
+                values = mx.concatenate([selected_values, values], axis=2)
+                
+                # Update mask to include memory mask
+                if mask is not None:
+                    # Use the same dtype as scores for the memory mask
+                    memory_mask = self._create_memory_mask(self.memory_topk, L, scores.dtype)
                     # Ensure masks have the same shape by adding batch and head dimensions if needed
                     if mask.ndim == 2:
                         # mask is (L, kv_seq_len), expand to (1, 1, L, kv_seq_len)
@@ -281,49 +222,14 @@ class ExtendedAttention(nn.Module):
         
         # Apply mask if provided
         if mask is not None:
-            # Ensure scores is defined in both memory/non-memory cases
-            try:
-                _ = scores
-            except NameError:
-                scores = local_scores
             scores = scores + mask
         
-        # Compute attention weights (upcast to float32 for stability like reference)
+        # Compute attention weights with improved numerical stability (upcast to fp32)
         weights = mx.softmax(scores.astype(mx.float32), axis=-1).astype(scores.dtype)
-        if self.debug_extended:
-            # Basic diagnostics
-            import numpy as _np
-            ws = _np.array(weights)
-            if ws.size:
-                mem_len = L * getattr(self, "memory_topk", 0)
-                if had_memory and mem_len > 0 and mem_len < ws.shape[-1]:
-                    mem_w = ws[..., :mem_len].sum(axis=-1).mean()
-                    loc_w = ws[..., mem_len:].sum(axis=-1).mean()
-                    print(f"[EXTDBG] mean mem_w={mem_w:.4f}, mean loc_w={loc_w:.4f}")
-                print(f"[EXTDBG] weights finite={_np.isfinite(ws).all()}")
-        # If memory is present, split and optionally gate/cap its contribution
-        mem_len = L * self.memory_topk if hasattr(self, "memory_topk") else 0
-        if had_memory and mem_len > 0 and mem_len < weights.shape[-1]:
-            memory_weights = weights[:, :, :, :mem_len]
-            local_weights = weights[:, :, :, mem_len:]
-            memory_values = values[:, :, :mem_len, :]
-            local_values = values[:, :, mem_len:, :]
-            # Apply memory weight cap to prevent collapse
-            if self.memory_weight_cap < 1.0:
-                eps = 1e-6
-                sum_m = memory_weights.sum(axis=-1, keepdims=True)
-                sum_l = local_weights.sum(axis=-1, keepdims=True)
-                cap = mx.array(self.memory_weight_cap, dtype=weights.dtype)
-                one = mx.array(1.0, dtype=weights.dtype)
-                factor_m = mx.minimum(one, cap / (sum_m + eps))
-                # Remaining probability goes to local
-                remaining = one - factor_m * sum_m
-                factor_l = remaining / (sum_l + eps)
-                memory_weights = memory_weights * factor_m
-                local_weights = local_weights * factor_l
-            output = (local_weights @ local_values) + self.memory_value_alpha * (memory_weights @ memory_values)
-        else:
-            output = weights @ values
+        
+        
+        # Apply attention to values
+        output = weights @ values
         
         # Reshape and project output
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
@@ -356,7 +262,6 @@ class ExtendedTransformerBlock(nn.Module):
         model_id: Optional[str] = None,
         layer_idx: Optional[int] = None,
         output_retrieved_memory_idx: bool = False,
-        parent_model: Optional["ExtendedLlamaModel"] = None,
     ) -> Tuple[mx.array, Optional[mx.array]]:
         r, retrieved_idx = self.self_attn(
             self.input_layernorm(x), 
@@ -365,8 +270,7 @@ class ExtendedTransformerBlock(nn.Module):
             memory_backend,
             model_id,
             layer_idx,
-            output_retrieved_memory_idx,
-            parent_model
+            output_retrieved_memory_idx
         )
         h = x + r
         r = self.mlp(self.post_attention_layernorm(h))
@@ -394,15 +298,12 @@ class ExtendedLlamaModel(nn.Module):
                 self.layers.append(TransformerBlock(args))
         
         self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
-
+        
         # Memory manager
         self.memory_manager = MemoryManager(
             default_backend=args.memory_backend,
             embedding_dim=args.hidden_size // args.num_attention_heads
         )
-        # Strict in-attention memory caches per layer (kv_head-major)
-        self.strict_in_attention = getattr(args, "strict_in_attention", False)
-        self._strict_memories = {}
     
     def __call__(
         self,
@@ -415,13 +316,9 @@ class ExtendedLlamaModel(nn.Module):
         
         mask = None
         if h.shape[1] > 1:
-            offset = 0
-            if cache is not None:
-                try:
-                    offset = next((c.offset for c in cache if c is not None), 0)
-                except Exception:
-                    offset = 0
-            mask = create_additive_causal_mask(h.shape[1], offset)
+            mask = create_additive_causal_mask(
+                h.shape[1], cache[0].offset if cache is not None else 0
+            )
             mask = mask.astype(h.dtype)
         
         if cache is None:
@@ -436,8 +333,7 @@ class ExtendedLlamaModel(nn.Module):
                     memory_backend=self.memory_manager,
                     model_id=model_id,
                     layer_idx=i,
-                    output_retrieved_memory_idx=output_retrieved_memory_idx,
-                    parent_model=self
+                    output_retrieved_memory_idx=output_retrieved_memory_idx
                 )
                 if output_retrieved_memory_idx:
                     all_retrieved_indices.append(retrieved_idx)
@@ -486,95 +382,59 @@ class ExtendedModel(nn.Module):
         if memory_tokens.ndim == 1:
             memory_tokens = memory_tokens.reshape(1, -1)
         
-        # Build per-layer caches and run a forward pass to populate them, then store post-RoPE KV
-        caches = []
+        # Build caches per layer and run a forward pass to populate them (no retrieval)
+        if self._model_id is None:
+            raise ValueError("Model ID must be set before adding memories")
+
+        # Ensure 2D
+        if memory_tokens.ndim == 1:
+            memory_tokens = memory_tokens.reshape(1, -1)
+
         B = memory_tokens.shape[0]
+        seq_len = memory_tokens.shape[1]
+
+        # Prepare KV caches for each layer
+        kv_caches: List[Optional[BatchedKVCache]] = []
         for layer in self.model.layers:
             if isinstance(layer, ExtendedTransformerBlock):
-                caches.append(BatchedKVCache(layer.self_attn.head_dim, layer.self_attn.n_kv_heads, batch_size=B))
+                kv_caches.append(BatchedKVCache(layer.self_attn.head_dim, layer.self_attn.n_kv_heads, batch_size=B))
             else:
-                caches.append(None)
+                kv_caches.append(None)
 
-        _ = self.model(memory_tokens, cache=caches, model_id=None, output_retrieved_memory_idx=False)
+        # Run the model to fill caches; pass model_id=None to disable retrieval
+        _ = self.model(memory_tokens, cache=kv_caches, model_id=None, output_retrieved_memory_idx=False)
 
+        # Now, for each extended layer, extract un-RoPE'd KV from caches and store as memories
         backend = self.model.memory_manager.get_backend()
-        # Optional special-token filtering setup
-        filter_special = getattr(self.model.args, 'remove_special_tokens', False)
-        special_ids = set()
-        if filter_special and tokenizer is not None:
-            try:
-                if getattr(tokenizer, 'bos_token_id', None) is not None:
-                    special_ids.add(int(tokenizer.bos_token_id))
-                if getattr(tokenizer, 'eos_token_id', None) is not None:
-                    special_ids.add(int(tokenizer.eos_token_id))
-                if getattr(tokenizer, 'pad_token_id', None) is not None and tokenizer.pad_token_id is not None:
-                    special_ids.add(int(tokenizer.pad_token_id))
-                # common zero id
-                special_ids.add(0)
-            except Exception:
-                special_ids = set()
-
-        # Convert memory tokens to numpy for indexing
-        mem_tok_np = None
-        if filter_special and tokenizer is not None:
-            try:
-                mem_tok_np = np.array(memory_tokens)
-            except Exception:
-                mem_tok_np = None
-
-        for layer_idx, (layer, c) in enumerate(zip(self.model.layers, caches)):
-            if isinstance(layer, ExtendedTransformerBlock) and c is not None and c.keys is not None and c.values is not None:
-                # c.keys: (B, n_kv_heads, L, head_dim)
-                Bk, Hkv, Lseq, Dhd = c.keys.shape
-                # Build per-batch keep indices to drop special-token positions
-                if mem_tok_np is not None and len(special_ids) > 0:
-                    keep_lists = []
-                    for b in range(Bk):
-                        Lmem = mem_tok_np.shape[1]
-                        keep = []
-                        for i in range(Lseq):
-                            if i < Lmem:
-                                if int(mem_tok_np[b, i]) not in special_ids:
-                                    keep.append(i)
-                            else:
-                                keep.append(i)
-                        if len(keep) == 0:
-                            # fallback: keep all if everything filtered
-                            keep = list(range(Lseq))
-                        keep_lists.append(np.array(keep, dtype=np.int64))
-                    # Gather per-batch, then concat
-                    k_batch = []
-                    v_batch = []
-                    for b in range(Bk):
-                        idx = mx.array(keep_lists[b])
-                        k_b = mx.take(c.keys[b], idx, axis=1)  # (n_kv_heads, L_kept, D)
-                        v_b = mx.take(c.values[b], idx, axis=1)
-                        # transpose to (L_kept, n_kv_heads, D)
-                        k_b = k_b.transpose(1, 0, 2)
-                        v_b = v_b.transpose(1, 0, 2)
-                        k_batch.append(k_b)
-                        v_batch.append(v_b)
-                    k = mx.concatenate(k_batch, axis=0)  # (sum L_kept, n_kv_heads, D)
-                    v = mx.concatenate(v_batch, axis=0)
-                else:
-                    # Flatten without filtering: (B*L, n_kv_heads, head_dim)
-                    k = c.keys.transpose(0, 2, 1, 3).reshape(Bk * Lseq, Hkv, Dhd)
-                    v = c.values.transpose(0, 2, 1, 3).reshape(Bk * Lseq, Hkv, Dhd)
-                layer_model_id = f"{self._model_id}__L{layer_idx}"
-                backend.add_memories(layer_model_id, k, v, memory_ids=memory_tokens.reshape(-1).tolist())
-                # Also store strict per-layer caches keyed by layer index (n_kv_heads, N, D)
-                if getattr(self.model, 'strict_in_attention', False):
-                    kk = k.transpose(1, 0, 2)  # (n_kv_heads, N, D)
-                    vv = v.transpose(1, 0, 2)
-                    if not hasattr(self.model, '_strict_memories'):
-                        self.model._strict_memories = {}
-                    self.model._strict_memories[layer_idx] = (kk, vv)
+        for layer_idx, (layer, c) in enumerate(zip(self.model.layers, kv_caches)):
+            if not isinstance(layer, ExtendedTransformerBlock):
+                continue
+            if c is None or c.keys is None or c.values is None:
+                continue
+            # c.keys/c.values: (B, n_kv, L, D) with offset == seq_len
+            k = c.keys[..., :c.offset, :]
+            v = c.values[..., :c.offset, :]
+            # (B, n_kv, L, D) -> (B, L, n_kv, D) -> (B*L, n_kv, D)
+            k_store = k.transpose(0, 2, 1, 3).reshape(B * k.shape[2], k.shape[1], k.shape[3])
+            v_store = v.transpose(0, 2, 1, 3).reshape(B * v.shape[2], v.shape[1], v.shape[3])
+            layer_model_id = f"{self._model_id}__L{layer_idx}"
+            backend.add_memories(
+                layer_model_id,
+                k_store,
+                v_store,
+                memory_ids=memory_tokens.reshape(-1).tolist(),
+            )
     
     def clear_memories(self):
         """Clear all memories for this model instance."""
         if self._model_id is not None:
             backend = self.model.memory_manager.get_backend()
+            # Clear base model_id and all layer-specific memories
             backend.clear(self._model_id)
+            for layer_idx in range(len(self.model.layers)):
+                layer_model_id = f"{self._model_id}__L{layer_idx}"
+                if backend.memory_exists(layer_model_id):
+                    backend.clear(layer_model_id)
     
     def __call__(
         self,

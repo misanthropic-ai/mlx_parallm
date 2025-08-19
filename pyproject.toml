@@ -74,5 +74,10 @@ dependencies = [
 [project.scripts]
 mlx_parallm_serve = "mlx_parallm.cli:cli_runner"
 
+[dependency-groups]
+dev = [
+    "aiohttp>=3.12.15",
+]
+
 # You might want to add a [tool.hatch.version] section if you use hatch for versioning,
 # or [tool.uv.sources] if you want to pin package sources, but this is a good start. 

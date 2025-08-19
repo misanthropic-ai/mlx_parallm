@@ -72,3 +72,12 @@ class MemoryBackend(ABC):
     def memory_exists(self, model_id: str) -> bool:
         """Check if memories exist for a specific model."""
         pass
+
+    # Optional fast-path to fetch all stored memories for a model_id
+    def get_all(self, model_id: str) -> Tuple[mx.array, mx.array]:
+        """
+        Return all stored memory keys and values for a model_id.
+        Shapes: (num_memories, n_kv_heads, head_dim) for both.
+        Implementations may override; default raises NotImplementedError.
+        """
+        raise NotImplementedError

@@ -61,9 +61,16 @@ Once installed, you can start the server using the `mlx_parallm_serve` command:
 mlx_parallm_serve --model-path <path_or_hf_id_to_your_model> --host <address> --port <port_number>
 ```
 
-For example:
+### Examples
+
+**Mistral 7B:**
 ```bash
 mlx_parallm_serve --model-path mistralai/Mistral-7B-Instruct-v0.1 --port 8000
+```
+
+**Qwen3 14B (Hermes fine-tune):**
+```bash
+mlx_parallm_serve --model-path NousResearch/Hermes-4-Qwen3-14B-1-e3 --port 8000
 ```
 
 This will start the Uvicorn server with the FastAPI application. You can then access the API endpoints, for example, the health check:

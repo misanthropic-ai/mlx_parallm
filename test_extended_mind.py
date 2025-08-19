@@ -7,6 +7,67 @@ import uuid
 import time
 
 
+def test_with_logprobs(model, tokenizer, prompt, memory_text=None):
+    """Helper to test generation with logprobs output."""
+    if memory_text:
+        print(f"\nTesting with memory: '{memory_text[:50]}...'")
+        tokens = mx.array(tokenizer.encode(memory_text))
+        model.add_memories(tokens)
+    
+    # Generate with logprobs
+    from mlx_parallm.utils import generate_step
+    
+    # Tokenize prompt
+    prompt_tokens = mx.array([tokenizer.encode(prompt)])
+    
+    # Generate a few tokens
+    print(f"Prompt: {prompt}")
+    print("Generating with logprobs...")
+    
+    output_tokens = []
+    for i in range(10):
+        logits = model(prompt_tokens)
+        next_token_logits = logits[:, -1, :]
+        
+        # Get top 5 tokens
+        top_k = 5
+        top_indices = mx.argpartition(-next_token_logits[0], kth=top_k-1)[:top_k]
+        top_logits = next_token_logits[0][top_indices]
+        # Sort by logits
+        sort_indices = mx.argsort(-top_logits)
+        top_indices = top_indices[sort_indices]
+        top_logits = top_logits[sort_indices]
+        
+        # Convert to probabilities
+        probs = mx.softmax(top_logits)
+        
+        print(f"\nStep {i+1} top {top_k} predictions:")
+        for j in range(top_k):
+            token_id = int(top_indices[j])
+            token_text = tokenizer.decode([token_id])
+            prob = float(probs[j])
+            print(f"  {j+1}. '{token_text}' (prob={prob:.4f})")
+        
+        # Select top token (greedy)
+        next_token = mx.argmax(next_token_logits, axis=-1)
+        output_tokens.append(int(next_token[0]))
+        
+        # Add to prompt for next iteration
+        prompt_tokens = mx.concatenate([prompt_tokens, next_token.reshape(1, 1)], axis=1)
+        
+        # Stop if we hit EOS
+        if int(next_token[0]) == tokenizer.eos_token_id:
+            break
+    
+    response = tokenizer.decode(output_tokens)
+    print(f"\nFinal response: {response}")
+    
+    if memory_text:
+        model.clear_memories()
+    
+    return response
+
+
 def test_extended_mind():
     """Test loading and using an extended mind model."""
     
@@ -36,7 +97,7 @@ def test_extended_mind():
         print(f"   Prompt: {prompt}")
         
         start_time = time.time()
-        response_no_memory = generate(model, tokenizer, prompt, max_tokens=50, verbose=False)
+        response_no_memory = generate(model, tokenizer, prompt, max_tokens=50, verbose=False, temp=0.0)
         time_no_memory = time.time() - start_time
         
         print(f"   Response: {response_no_memory}")
@@ -68,7 +129,7 @@ def test_extended_mind():
         print(f"   Prompt: {prompt}")
         
         start_time = time.time()
-        response_with_memory = generate(model, tokenizer, prompt, max_tokens=50, verbose=False)
+        response_with_memory = generate(model, tokenizer, prompt, max_tokens=50, verbose=False, temp=0.0)
         time_with_memory = time.time() - start_time
         
         print(f"   Response: {response_with_memory}")
@@ -81,8 +142,17 @@ def test_extended_mind():
         
         # Test 5: Verify memories are cleared
         print("\n5. Testing generation after clearing memories:")
-        response_after_clear = generate(model, tokenizer, prompt, max_tokens=50, verbose=False)
+        response_after_clear = generate(model, tokenizer, prompt, max_tokens=50, verbose=False, temp=0.0)
         print(f"   Response: {response_after_clear}")
+        
+        # Test 6: Debug with logprobs
+        print("\n6. Debugging with logprobs to see token predictions:")
+        print("-" * 50)
+        
+        # Re-add the memory for logprobs test
+        model.add_memories(memory_tokens_mx)
+        test_with_logprobs(model, tokenizer, prompt, None)  # Memory already added
+        model.clear_memories()
         
         # Summary
         print("\n" + "="*50)
@@ -94,10 +164,14 @@ def test_extended_mind():
         print(f"  - With memory: {time_with_memory:.2f}s")
         
         # Check if memory improved the response
-        if "1971" in response_with_memory and "1971" not in response_no_memory:
+        if "1971" in response_with_memory:
             print("✓ Memory successfully improved factual accuracy!")
+            print("✓ The year 1971 was correctly retrieved from memory")
         else:
-            print("⚠ Memory impact on response unclear - may need more testing")
+            print("✗ ERROR: Memory was not utilized - '1971' not found in response")
+            print("  This indicates the Extended Mind implementation is not working correctly")
+            print("\n  Run with logprobs debugging above to see why memory tokens aren't selected")
+            assert False, "Extended Mind failed to utilize memory for factual answer"
             
     except Exception as e:
         print(f"✗ Error during testing: {e}")
@@ -130,7 +204,7 @@ def test_batch_generation_with_memories():
         ]
         
         print("Testing batch generation with memories...")
-        responses = batch_generate(model, tokenizer, prompts, max_tokens=50, verbose=True)
+        responses = batch_generate(model, tokenizer, prompts, max_tokens=50, verbose=True, temp=0.0)
         
         for prompt, response in zip(prompts, responses):
             print(f"\nPrompt: {prompt}")

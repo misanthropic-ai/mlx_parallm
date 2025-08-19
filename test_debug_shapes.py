@@ -27,8 +27,10 @@ model.add_memories(tokens.reshape(1, -1))
 
 # Check what's stored in the backend
 backend = model.model.memory_manager.get_backend()
-info = backend.list_memories('debug')
-print(f"\nMemory backend info: {info}")
+# Check layer-specific namespace since memories are stored per layer
+layer_model_id = 'debug__L0'  # Layer 0 namespace
+info = backend.list_memories(layer_model_id)
+print(f"\nMemory backend info for layer 0: {info}")
 
 # Now let's trace through a forward pass with detailed shape printing
 print("\nTracing forward pass...")
@@ -88,7 +90,7 @@ if hasattr(layer, 'self_attn'):
     queries_norm = queries / (mx.linalg.norm(queries, axis=-1, keepdims=True) + 1e-8)
     
     selected_keys, selected_values, similarities, indices = backend.search(
-        'debug', queries_norm, topk=3, layer_idx=0
+        'debug__L0', queries_norm, topk=3, layer_idx=0  # Use layer-specific namespace
     )
     
     print(f"\nMemory search results:")
