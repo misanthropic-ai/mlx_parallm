@@ -42,35 +42,18 @@ class ModelNotFoundError(Exception):
         super().__init__(self.message)
 
 
-def _get_classes(config: dict, use_extended_mind: bool = False, use_mega: bool = False):
+def _get_classes(config: dict):
     """
     Retrieve the model and model args classes based on the configuration.
 
     Args:
         config (dict): The model configuration.
-        use_extended_mind (bool): Whether to use extended mind variant if available.
 
     Returns:
         A tuple containing the Model class and the ModelArgs class.
     """
     model_type = config["model_type"]
     model_type = MODEL_REMAPPING.get(model_type, model_type)
-    
-    # Check if we should use extended variant
-    if use_extended_mind and model_type == "llama":
-        try:
-            arch = importlib.import_module(f"mlx_parallm.models.llama_extended")
-            return arch.ExtendedModel, arch.ExtendedModelArgs
-        except ImportError:
-            logging.warning("Extended mind variant not available for llama, falling back to standard")
-
-    # Check if we should use MEGa variant
-    if use_mega and model_type == "llama":
-        try:
-            arch = importlib.import_module(f"mlx_parallm.models.llama_mega")
-            return arch.MEGaModel, arch.MEGaModelArgs
-        except ImportError:
-            logging.warning("MEGa variant not available for llama, falling back to standard")
     
     try:
         arch = importlib.import_module(f"mlx_parallm.models.{model_type}")
@@ -127,8 +110,6 @@ def load_model_and_tokenizer(
     path_or_hf_repo: str,
     *,
     revision: Optional[str] = None,
-    use_extended_mind: bool = False,
-    use_mega: bool = False,
     model_config: dict = {},
 ):
     """Load a model and tokenizer from HF or local path.
@@ -136,8 +117,6 @@ def load_model_and_tokenizer(
     Args:
         path_or_hf_repo: HF repo id or local path.
         revision: Optional revision.
-        use_extended_mind: If True and model supports it, load Extended Mind.
-        use_mega: If True and model supports it, load MEGa.
         model_config: Optional overrides to config.json prior to init.
 
     Returns:
@@ -145,7 +124,7 @@ def load_model_and_tokenizer(
     """
     model_path = get_model_path(path_or_hf_repo, revision=revision)
     # Build model
-    model = load_model(model_path, lazy=False, model_config=model_config, use_extended_mind=use_extended_mind, use_mega=use_mega)
+    model = load_model(model_path, lazy=False, model_config=model_config)
     # Tokenizer
     tokenizer = load_tokenizer(model_path)
     return model, tokenizer
@@ -483,8 +462,6 @@ def load_model(
     model_path: Path,
     lazy: bool = False,
     model_config: dict = {},
-    use_extended_mind: bool = False,
-    use_mega: bool = False,
 ) -> nn.Module:
     """
     Load and initialize the model from a given path.
@@ -496,8 +473,6 @@ def load_model(
             when needed. Default: ``False``
         model_config(dict, optional): Configuration parameters for the model.
             Defaults to an empty dictionary.
-        use_extended_mind (bool): Whether to use extended mind variant if available.
-            Default: ``False``
 
     Returns:
         nn.Module: The loaded and initialized model.
@@ -524,9 +499,7 @@ def load_model(
     for wf in weight_files:
         weights.update(mx.load(wf))
 
-    model_class, model_args_class = _get_classes(
-        config=config, use_extended_mind=use_extended_mind, use_mega=use_mega
-    )
+    model_class, model_args_class = _get_classes(config=config)
 
     model_args = model_args_class.from_dict(config)
     model = model_class(model_args)
@@ -572,7 +545,6 @@ def load(
     model_config={},
     adapter_path: Optional[str] = None,
     lazy: bool = False,
-    use_extended_mind: bool = False,
 ) -> Tuple[nn.Module, TokenizerWrapper]:
     """
     Load the model and tokenizer from a given path or a huggingface repository.
@@ -588,8 +560,6 @@ def load(
         lazy (bool): If False eval the model parameters to make sure they are
             loaded in memory before returning, otherwise they will be loaded
             when needed. Default: ``False``
-        use_extended_mind (bool): Whether to use extended mind variant if available.
-            Default: ``False``
     Returns:
         Tuple[nn.Module, TokenizerWrapper]: A tuple containing the loaded model and tokenizer.
 
@@ -599,7 +569,7 @@ def load(
     """
     model_path = get_model_path(path_or_hf_repo)
 
-    model = load_model(model_path, lazy, model_config, use_extended_mind)
+    model = load_model(model_path, lazy, model_config)
     if adapter_path is not None:
         model = load_adapters(model, adapter_path)
         model.eval()

@@ -85,24 +85,17 @@ async def startup_event():
         model_registry[model_id_cli] = record
 
         try:
-            # Actual model loading using the corrected alias
-            use_extended = getattr(current_server_args, 'use_extended_mind', False)
+            # Actual model loading
             model_instance, tokenizer_instance = load_model_and_tokenizer_util(
-                current_server_args.model_path,
-                use_extended_mind=use_extended
+                current_server_args.model_path
             )
-            
-            # Set model ID if it's an extended model
-            if use_extended and hasattr(model_instance, 'set_model_id'):
-                model_instance.set_model_id(model_id_cli)
-                logging.info(f"Extended Mind model initialized with ID: {model_id_cli}")
             
             # Update the record in the registry
             record.model_instance = model_instance
             record.tokenizer_instance = tokenizer_instance
             record.status = ModelStatus.LOADED
             # model_type might be refined here if load_model_from_util provides more info
-            logging.info(f"Successfully loaded model: {model_id_cli} (extended_mind={use_extended})")
+            logging.info(f"Successfully loaded model: {model_id_cli}")
         except Exception as e:
             record.status = ModelStatus.ERROR_LOADING
             logging.error(f"Failed to load model {model_id_cli}: {e}", exc_info=True)

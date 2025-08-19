@@ -266,13 +266,6 @@ This project uses `pyproject.toml` as the single source of truth for dependencie
 
 (Details about development workflows, running tests, etc., will be added here as the project progresses.)
 
-## Extended Mind Testing
-
-- A convenience script runs several Extended Mind configs (strict path, layers, masking):
-  ```bash
-  python scripts/test_extended_mind_variants.py --model mlx-community/Llama-3.2-3B-Instruct-4bit
-  ```
-  This prints load times and generated outputs for quick inspection. Use it to iterate on memory settings.
 
 ## Contributing
 

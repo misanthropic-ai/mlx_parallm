@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-mlx_parallm is a high-performance, parallelized batch generation server for MLX models designed for Apple Silicon. It provides an OpenAI-compatible API with support for batched inference, Extended Mind Transformers, and future RL/embedding capabilities.
+mlx_parallm is a high-performance, parallelized batch generation server for MLX models designed for Apple Silicon. It provides an OpenAI-compatible API with support for batched inference and future RL/embedding capabilities.
 
 ## Build and Development Commands
 
@@ -31,15 +31,11 @@ mlx_parallm_serve --model-path <model_path> --host <host> --port <port>
 # Example with quantized model
 mlx_parallm_serve --model-path mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
 
-# With Extended Mind support
-mlx_parallm_serve --model-path mlx-community/Llama-3.2-3B-Instruct-4bit --use-extended-mind --port 8000
 ```
 
 ### Testing
 ```bash
 # No test framework currently configured - check README or pyproject.toml for testing approach
-# Extended Mind testing script
-python scripts/test_extended_mind_variants.py --model <model_path>
 ```
 
 ## High-Level Architecture
@@ -68,17 +64,10 @@ Custom KV cache replacing standard `mlx_lm.KVCache` for parallel batch processin
 - Handles `n` parameter by replicating prompts within batch
 - Distributes results back to original request futures
 
-#### Extended Mind Transformers (`models/llama_extended.py`)
-- `ExtendedAttention`: Memory-augmented attention mechanism
-- `MemoryManager` (`memory/manager.py`): Coordinates memory backends
-- FAISS backend for vector similarity search
-- Per-head memory indexing for grouped query attention
-
 ### Key Configuration
 - `MAX_BATCH_SIZE = 8`: Maximum requests per batch
 - `BATCH_TIMEOUT = 0.1`: Seconds to wait for batch formation
 - Model registry uses model path as ID by default
-- Memory parameters: `memory_topk`, `mask_by_sim`, `sim_threshold`
 
 ## API Endpoints
 
@@ -91,31 +80,6 @@ Custom KV cache replacing standard `mlx_lm.KVCache` for parallel batch processin
   - Applies tokenizer chat template automatically
   - Supports: `messages`, `max_tokens`, `temperature`, `top_p`, `stream`, `n`
 
-### Memory Management (Planned)
-- `POST /v1/models/{model_id}/memories`: Add memories
-- `GET /v1/models/{model_id}/memories`: List memories
-- `DELETE /v1/models/{model_id}/memories`: Clear memories
-
-## Extended Mind Status
-
-### Working
-- ✅ Core architecture implemented
-- ✅ Memory backend system (FAISS, manual)
-- ✅ Model loading with `--use-extended-mind`
-- ✅ Memory addition and retrieval
-- ✅ RoPE handling for Llama 2/3 variants
-
-### Issues
-- ⚠️ Generation with memories produces incorrect output (exclamation marks)
-- Main issue: BatchedKVCache dimension mismatch between memory and cached values
-- Memory values: `(B, n_heads, L * topk, head_dim)` for current queries
-- Cached values: `(B, n_heads, total_cached_seq_len, head_dim)`
-
-### Next Steps
-1. Fix generation issue with memory-augmented attention
-2. Add API endpoints for memory management
-3. Implement other backends (Redis, Neo4j, SQL)
-4. Add memory parameters to request schemas
 
 ## Code Organization
 
@@ -128,11 +92,10 @@ mlx_parallm/
 ├── models/
 │   ├── base.py           # BatchedKVCache implementation
 │   ├── llama.py          # Standard Llama architecture
-│   └── llama_extended.py # Extended Mind Llama variant
-├── memory/
-│   ├── manager.py        # Memory backend coordination
-│   ├── base.py          # Abstract backend interface
-│   └── faiss_backend.py # FAISS vector search
+│   ├── qwen3.py          # Qwen3 architecture
+│   ├── phi3.py           # Phi3 architecture
+│   ├── gemma.py          # Gemma architecture
+│   └── mixtral.py        # Mixtral architecture
 ├── utils.py              # Core generation utilities
 └── sample_utils.py       # Sampling methods (top_p, etc.)
 ```
@@ -159,4 +122,3 @@ export HF_TOKEN=your_token_here
 - Embeddings endpoint not implemented
 - No distributed operation
 - Streaming with n>1 not supported
-- Extended Mind generation produces incorrect output

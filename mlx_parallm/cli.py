@@ -18,7 +18,6 @@ class ServerCLIArgs(Cmd):
     model_path: str = Field(..., description="The path or Hugging Face ID of the base model to load.", cli=["--model-path"])
     host: str = Field("127.0.0.1", description="Host to bind the server to.", cli=["--host"])
     port: int = Field(8000, description="Port to bind the server to.", cli=["--port"])
-    use_extended_mind: bool = Field(False, description="Enable Extended Mind Transformers for memory-augmented generation.", cli=["--use-extended-mind"])
     # We'll add more arguments like workers, log_level, config_file later
     # Log level for Uvicorn can be set directly in uvicorn.run
 
