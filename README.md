@@ -78,33 +78,121 @@ This will start the Uvicorn server with the FastAPI application. You can then ac
 
 ## Server API: Completions + Logprobs
 
-- Text completions (non-streamed):
-  ```bash
-  curl -s http://127.0.0.1:8000/v1/completions \
-    -H 'Content-Type: application/json' \
-    -d '{
-      "model": "<your_model_id>",
-      "prompt": "Say hello in one sentence.",
-      "max_tokens": 16,
-      "temperature": 0.7,
-      "top_p": 1.0
-    }'
-  ```
+### Text Completions
 
-- Token logprobs and echo (OpenAI-style):
-  ```bash
-  curl -s http://127.0.0.1:8000/v1/completions \
-    -H 'Content-Type: application/json' \
-    -d '{
-      "model": "<your_model_id>",
-      "prompt": "Say hello in one sentence.",
-      "max_tokens": 8,
-      "temperature": 0.0,
-      "logprobs": 5,
-      "echo": true
-    }'
-  ```
-  - Response includes `choices[0].logprobs` with `tokens`, `token_logprobs`, `top_logprobs`, `text_offset`.
+**Basic completion (non-streamed):**
+```bash
+curl -s http://127.0.0.1:8000/v1/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "<your_model_id>",
+    "prompt": "Say hello in one sentence.",
+    "max_tokens": 16,
+    "temperature": 0.7,
+    "top_p": 1.0
+  }'
+```
+
+**With Qwen3 model:**
+```bash
+curl -s http://127.0.0.1:8000/v1/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "NousResearch/Hermes-4-Qwen3-14B-1-e3",
+    "prompt": "The capital of France is",
+    "max_tokens": 50,
+    "temperature": 0.7
+  }' | jq -r '.choices[0].text'
+```
+
+**Token logprobs and echo (OpenAI-style):**
+```bash
+curl -s http://127.0.0.1:8000/v1/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "<your_model_id>",
+    "prompt": "Say hello in one sentence.",
+    "max_tokens": 8,
+    "temperature": 0.0,
+    "logprobs": 5,
+    "echo": true
+  }'
+```
+- Response includes `choices[0].logprobs` with `tokens`, `token_logprobs`, `top_logprobs`, `text_offset`.
+
+### Chat Completions
+
+**Basic chat completion:**
+```bash
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "NousResearch/Hermes-4-Qwen3-14B-1-e3",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "What is quantum computing?"}
+    ],
+    "max_tokens": 100,
+    "temperature": 0.7
+  }' | jq -r '.choices[0].message.content'
+```
+
+**Streaming chat completion:**
+```bash
+curl -N http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "NousResearch/Hermes-4-Qwen3-14B-1-e3",
+    "messages": [
+      {"role": "user", "content": "Write a haiku about coding"}
+    ],
+    "max_tokens": 50,
+    "temperature": 0.7,
+    "stream": true
+  }'
+```
+
+### Batched Inference (Multiple Concurrent Requests)
+
+The server automatically batches multiple concurrent requests for improved throughput. Here's a Python example:
+
+```python
+import asyncio
+import aiohttp
+import json
+
+async def make_request(session, prompt, request_id):
+    url = "http://localhost:8000/v1/completions"
+    payload = {
+        "model": "NousResearch/Hermes-4-Qwen3-14B-1-e3",
+        "prompt": prompt,
+        "max_tokens": 50,
+        "temperature": 0.7
+    }
+    async with session.post(url, json=payload) as response:
+        result = await response.json()
+        return f"Request {request_id}: {result['choices'][0]['text'][:50]}..."
+
+async def test_batching():
+    prompts = [
+        "The meaning of life is",
+        "Machine learning is",
+        "Python was created by",
+        "Climate change affects",
+        "Space exploration helps"
+    ]
+    
+    async with aiohttp.ClientSession() as session:
+        tasks = [make_request(session, prompt, i) for i, prompt in enumerate(prompts)]
+        results = await asyncio.gather(*tasks)
+        for result in results:
+            print(result)
+
+# Run the test
+asyncio.run(test_batching())
+```
+
+The server will automatically batch these requests (up to 8 at a time by default) for efficient parallel processing.
 
 ### Raw Completions vs Chat
 
@@ -211,6 +299,7 @@ Models tested:
 - `meta-llama/Meta-Llama-3-8B-Instruct`
 - `microsoft/Phi-3-mini-4k-instruct`
 - `google/gemma-1.1-2b-it`
+- `NousResearch/Hermes-4-Qwen3-14B-1-e3` (Qwen3)
 - `mlx-community/Meta-Llama-3-8B-Instruct-4bit`
 - `mlx-community/Phi-3-mini-4k-instruct-4bit`
 - `mlx-community/gemma-1.1-2b-it-4bit`
