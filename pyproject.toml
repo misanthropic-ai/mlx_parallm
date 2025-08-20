@@ -73,6 +73,8 @@ dependencies = [
 
 [project.scripts]
 mlx_parallm_serve = "mlx_parallm.cli:cli_runner"
+mlx_parallm_train = "mlx_parallm.rl_training.train:train_cli_runner"
+mlx_parallm_merge_lora = "mlx_parallm.tools.merge_lora:merge_lora_cli_runner"
 
 [dependency-groups]
 dev = [

@@ -52,6 +52,8 @@ class InternalModelRecord(BaseModel):
     status: ModelStatus = ModelStatus.AVAILABLE_NOT_LOADED
     created_timestamp: int = Field(default_factory=lambda: int(time.time()))
     owned_by: str = "mlx_parallm"
+    # Track currently applied adapter (e.g., LoRA/DoRA) if any
+    adapter_path: Optional[str] = None
     
     # Actual loaded instances (not part of the serialized ModelCard)
     model_instance: Optional[Any] = None

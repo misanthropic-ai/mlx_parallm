@@ -1,0 +1,4 @@
+INFO:     127.0.0.1:65126 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65132 - "POST /register HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65133 - "POST /start HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65134 - "POST /get-batch HTTP/1.1" 404 Not Found

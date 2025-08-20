@@ -1,0 +1,27 @@
+   Building mlx-parallm @ file:///Users/shannon/Workspace/artivus/mlx_parallm
+      Built mlx-parallm @ file:///Users/shannon/Workspace/artivus/mlx_parallm
+Uninstalled 1 package in 1ms
+Installed 1 package in 1ms
+INFO:root:mlx_parallm_train starting
+INFO:root:Server thread launched; waiting for readiness...
+INFO:     Started server process [65313]
+INFO:     Waiting for application startup.
+INFO:root:Attempting to load initial model from CLI: NousResearch/Hermes-4-Qwen3-14B-1-e3
+Fetching 17 files:   0%|          | 0/17 [00:00<?, ?it/s]Fetching 17 files: 100%|██████████| 17/17 [00:00<00:00, 42191.22it/s]
+INFO:root:Successfully loaded model: NousResearch/Hermes-4-Qwen3-14B-1-e3
+INFO:root:Model NousResearch/Hermes-4-Qwen3-14B-1-e3 registered with status: loaded
+INFO:root:Batch processing worker task created.
+INFO:root:Batch processing worker starting. MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.1s
+INFO:root:Batch worker successfully retrieved model 'NousResearch/Hermes-4-Qwen3-14B-1-e3'.
+INFO:     Application startup complete.
+ERROR:    [Errno 48] error while attempting to bind on address ('127.0.0.1', 8000): address already in use
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+'dict' object has no attribute 'prompt'  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/pydantic_cli/__init__.py", line 326, in _runner
+    out = cmd.run()
+          ^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/rl_training/train.py", line 151, in run
+    trainer.step(batch)
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/rl_training/grpo_trainer.py", line 112, in step
+    dlp, n = self._delta_logprob_vs_ref(item.prompt, item.response)
+                                        ^^^^^^^^^^^

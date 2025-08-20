@@ -1,0 +1,31 @@
+INFO:root:mlx_parallm_train starting
+INFO:root:Server thread launched; waiting for readiness...
+INFO:     Started server process [6887]
+INFO:     Waiting for application startup.
+INFO:root:Attempting to load initial model from CLI: NousResearch/Hermes-4-Qwen3-14B-1-e3
+Fetching 17 files:   0%|          | 0/17 [00:00<?, ?it/s]Fetching 17 files: 100%|██████████| 17/17 [00:00<00:00, 120852.83it/s]
+INFO:root:Successfully loaded model: NousResearch/Hermes-4-Qwen3-14B-1-e3
+INFO:root:Model NousResearch/Hermes-4-Qwen3-14B-1-e3 registered with status: loaded
+INFO:root:Batch processing worker task created.
+INFO:root:Batch processing worker starting. MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.1s
+INFO:root:Batch worker successfully retrieved model 'NousResearch/Hermes-4-Qwen3-14B-1-e3'.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+WARNING:root:Atropos registration/start failed: 404, message='Not Found', url='http://localhost:8001/start'
+404, message='Not Found', url='http://localhost:8001/get-batch'  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/pydantic_cli/__init__.py", line 326, in _runner
+    out = cmd.run()
+          ^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/rl_training/train.py", line 142, in run
+    batch = provider.fetch_batch(self.batch_size, token_budget=self.token_budget, require_same_env=False)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/rl_training/atropos_client.py", line 100, in fetch_batch
+    return asyncio.get_event_loop().run_until_complete(self.fetch_batch_async(batch_size, token_budget, require_same_env))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/rl_training/atropos_client.py", line 59, in fetch_batch_async
+    data = await self._post_json("/get-batch", payload)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/rl_training/atropos_client.py", line 37, in _post_json
+    resp.raise_for_status()
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/aiohttp/client_reqrep.py", line 629, in raise_for_status
+    raise ClientResponseError(

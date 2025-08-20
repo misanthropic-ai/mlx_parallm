@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends
 from starlette.responses import StreamingResponse
-from typing import Dict, List, Any, AsyncGenerator, Tuple, Optional, Union
+from typing import List, Any, AsyncGenerator, Tuple, Optional, Union
 import logging
 import os
 import time
@@ -46,9 +46,7 @@ app = FastAPI(
     description="A high-performance, parallelized batch generation server for MLX models.",
 )
 
-# Simple in-memory model registry
-# Key: model_id (str), Value: InternalModelRecord
-model_registry: Dict[str, InternalModelRecord] = {}
+from mlx_parallm.server.state import model_registry
 
 # Request Queue and Batching Configuration
 REQUEST_QUEUE: asyncio.Queue = asyncio.Queue()
@@ -80,22 +78,31 @@ async def startup_event():
             id=model_id_cli,
             path_or_hf_id=current_server_args.model_path,
             status=ModelStatus.LOADING,
-            model_type="causal_lm"
+            model_type="causal_lm",
+            adapter_path=getattr(current_server_args, "lora_path", None),
         )
         model_registry[model_id_cli] = record
 
         try:
             # Actual model loading
+            # Load base model and optionally apply LoRA/DoRA adapter if provided
             model_instance, tokenizer_instance = load_model_and_tokenizer_util(
-                current_server_args.model_path
+                current_server_args.model_path,
+                adapter_path=getattr(current_server_args, "lora_path", None),
             )
             
             # Update the record in the registry
             record.model_instance = model_instance
             record.tokenizer_instance = tokenizer_instance
             record.status = ModelStatus.LOADED
+            record.adapter_path = getattr(current_server_args, "lora_path", None)
             # model_type might be refined here if load_model_from_util provides more info
-            logging.info(f"Successfully loaded model: {model_id_cli}")
+            if getattr(current_server_args, "lora_path", None):
+                logging.info(
+                    f"Successfully loaded model: {model_id_cli} with adapter: {current_server_args.lora_path}"
+                )
+            else:
+                logging.info(f"Successfully loaded model: {model_id_cli}")
         except Exception as e:
             record.status = ModelStatus.ERROR_LOADING
             logging.error(f"Failed to load model {model_id_cli}: {e}", exc_info=True)
