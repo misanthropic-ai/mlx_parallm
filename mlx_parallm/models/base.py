@@ -41,6 +41,19 @@ class BatchedKVCache:
         self.values[..., prev : self.offset, :] = values
         return self.keys[..., : self.offset, :], self.values[..., : self.offset, :]
 
+    def reset(self, batch_size: int | None = None):
+        """Reset the cache for reuse.
+
+        If batch_size differs from the allocated tensors' batch dimension,
+        drop references to existing arrays so they will be reallocated on next use.
+        Otherwise, just reset the offset so the existing buffers can be reused.
+        """
+        if batch_size is not None and batch_size != self.batch_size:
+            self.batch_size = batch_size
+            self.keys = None
+            self.values = None
+        self.offset = 0
+
 @dataclass
 class BaseModelArgs:
     @classmethod

@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends
 from starlette.responses import StreamingResponse
-from typing import List, Any, AsyncGenerator, Tuple, Optional, Union
+from typing import List, Any, AsyncGenerator, Tuple, Optional, Union, Dict
 import logging
 import os
 import time
@@ -30,6 +30,7 @@ from mlx_parallm.sample_utils import top_p_sampling
 import numpy as np
 import math
 from mlx_lm.tokenizer_utils import TokenizerWrapper
+from mlx_parallm.utils import apply_chat_template_cached
 from mlx_parallm.cli import current_server_args # For accessing CLI args like model_path
 
 # Attempt to import server arguments from cli.py
@@ -48,11 +49,34 @@ app = FastAPI(
 
 from mlx_parallm.server.state import model_registry
 
+# Lightweight in-process metrics
+METRICS: Dict[str, Any] = {
+    "batches_processed": 0,
+    "batch_fill_acc": 0.0,
+    "batch_fill_samples": 0,
+    "queue_depth_last": 0,
+    "stream_batches_processed": 0,
+}
+
 # Request Queue and Batching Configuration
 REQUEST_QUEUE: asyncio.Queue = asyncio.Queue()
-MAX_BATCH_SIZE = 8  # Default value, can be made configurable later
-BATCH_TIMEOUT = 0.1 # Seconds, default value, can be made configurable later
-REQUEST_TIMEOUT_SECONDS = 60.0 # Default request timeout
+MAX_BATCH_SIZE = 8
+BATCH_TIMEOUT = 0.1
+REQUEST_TIMEOUT_SECONDS = 60.0
+
+# Streaming concurrency guard to prevent starvation of batch worker
+MAX_CONCURRENT_STREAMS = 4
+STREAMING_SEMAPHORE: asyncio.Semaphore = asyncio.Semaphore(MAX_CONCURRENT_STREAMS)
+
+# Queue for co-batched streaming (chat)
+STREAM_CHAT_QUEUE: asyncio.Queue = asyncio.Queue()
+STREAM_BATCH_TIMEOUT = 0.02
+
+class StreamQueuedChat:
+    def __init__(self, request: ChatCompletionRequest):
+        self.request = request
+        self.queue: asyncio.Queue[str] = asyncio.Queue()
+        self.id = f"chatcmpl-{uuid.uuid4().hex[:28]}"
 
 class QueuedRequest:
     future: Future
@@ -70,6 +94,22 @@ async def startup_event():
     Event handler for application startup.
     Loads the initial model specified via CLI arguments using mlx_parallm.utils.load.
     """
+    # Apply batching/timeouts from CLI if provided
+    global MAX_BATCH_SIZE, BATCH_TIMEOUT, REQUEST_TIMEOUT_SECONDS, STREAMING_SEMAPHORE, MAX_CONCURRENT_STREAMS
+    try:
+        if current_server_args is not None:
+            MAX_BATCH_SIZE = int(getattr(current_server_args, "max_batch_size", MAX_BATCH_SIZE))
+            BATCH_TIMEOUT = float(getattr(current_server_args, "batch_timeout", BATCH_TIMEOUT))
+            REQUEST_TIMEOUT_SECONDS = float(getattr(current_server_args, "request_timeout_seconds", REQUEST_TIMEOUT_SECONDS))
+            # Optional arg in future; keep default otherwise
+            max_streams = int(getattr(current_server_args, "max_concurrent_streams", MAX_CONCURRENT_STREAMS))
+            MAX_CONCURRENT_STREAMS = max_streams
+            STREAMING_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_STREAMS)
+            logging.info(f"Batch config: MAX_BATCH_SIZE={MAX_BATCH_SIZE}, BATCH_TIMEOUT={BATCH_TIMEOUT}s, REQUEST_TIMEOUT_SECONDS={REQUEST_TIMEOUT_SECONDS}")
+            logging.info(f"Streaming concurrency limit: MAX_CONCURRENT_STREAMS={MAX_CONCURRENT_STREAMS}")
+    except Exception as e:
+        logging.warning(f"Failed to apply CLI batching/timeouts: {e}")
+
     if current_server_args and current_server_args.model_path:
         model_id_cli = current_server_args.model_path # Use path as ID for now
         logging.info(f"Attempting to load initial model from CLI: {model_id_cli}")
@@ -114,6 +154,9 @@ async def startup_event():
     # Start the batch processing worker
     asyncio.create_task(batch_processing_worker())
     logging.info("Batch processing worker task created.")
+    # Start streaming batch worker
+    asyncio.create_task(streaming_batch_worker())
+    logging.info("Streaming batch worker task created.")
 
 @app.get("/health", tags=["General"])
 async def health_check():
@@ -122,6 +165,36 @@ async def health_check():
     Returns a simple status indicating the server is operational.
     """
     return {"status": "ok"}
+
+@app.get("/debug/metrics", tags=["Debug"])
+async def debug_metrics():
+    try:
+        avg_fill = (
+            (METRICS["batch_fill_acc"] / METRICS["batch_fill_samples"]) if METRICS["batch_fill_samples"] else 0.0
+        )
+    except Exception:
+        avg_fill = 0.0
+    return {
+        "batches_processed": METRICS.get("batches_processed", 0),
+        "avg_batch_fill_pct": avg_fill,
+        "queue_depth_last": METRICS.get("queue_depth_last", 0),
+        "stream_batches_processed": METRICS.get("stream_batches_processed", 0),
+    }
+
+@app.get("/debug/metrics", tags=["Debug"])
+async def debug_metrics():
+    try:
+        avg_fill = (
+            (METRICS["batch_fill_acc"] / METRICS["batch_fill_samples"]) if METRICS["batch_fill_samples"] else 0.0
+        )
+    except Exception:
+        avg_fill = 0.0
+    return {
+        "batches_processed": METRICS.get("batches_processed", 0),
+        "avg_batch_fill_pct": avg_fill,
+        "queue_depth_last": METRICS.get("queue_depth_last", 0),
+        "stream_batches_processed": METRICS.get("stream_batches_processed", 0),
+    }
 
 @app.get("/v1/models", response_model=ModelList, tags=["Models"])
 async def list_models_endpoint():
@@ -260,10 +333,11 @@ async def create_completion(request: CompletionRequest):
         if request.n is not None and request.n > 1:
             raise HTTPException(status_code=400, detail="Streaming with n > 1 is not currently supported for completions.")
         logging.info(f"Streaming completion request received for model {request.model}. Stream flag: {request.stream}")
-        return StreamingResponse(
-            _completion_stream_generator(request, request.model, model_instance, tokenizer_instance),
-            media_type="text/event-stream"
-        )
+        async def limited_gen():
+            async with STREAMING_SEMAPHORE:
+                async for chunk in _completion_stream_generator(request, request.model, model_instance, tokenizer_instance):
+                    yield chunk
+        return StreamingResponse(limited_gen(), media_type="text/event-stream")
     else:
         # Non-streaming logic
         # The batching worker now handles 'n', so direct generation here assumes n=1 or is overridden by queue.
@@ -446,47 +520,32 @@ async def _chat_completion_stream_generator(
     request: ChatCompletionRequest,
     model_id: str,
     model_instance: nn.Module,
-    tokenizer_instance: TokenizerWrapper
+    tokenizer_instance: TokenizerWrapper,
 ) -> AsyncGenerator[str, None]:
     """Generates text chunks for streaming chat completion in SSE format."""
-    
+
     # 1. Prepare the prompt using the chat template
     try:
         messages_for_template = [msg.model_dump(exclude_none=True) for msg in request.messages]
-        # For batch_stream_generate_text, we need a list of prompts, even if it's just one.
-        # And it expects tokenized prompts.
         prompt_text = tokenizer_instance.apply_chat_template(
             messages_for_template,
             tokenize=False,
-            add_generation_prompt=True
+            add_generation_prompt=True,
         )
     except Exception as e:
         logging.error(f"Error applying chat template for model {model_id} during stream: {e}")
-        # In a stream, error handling like this is tricky. 
-        # We might yield an error-formatted SSE or just stop.
-        # For now, let it raise to be caught by FastAPI error handling if possible before stream starts,
-        # or simply log and stop if error occurs mid-stream prep.
-        # A robust solution would involve yielding an error SSE.
-        # Simplified: if template fails, we won't even start the generate_step stream.
-        # This specific error would occur before yielding anything.
         raise HTTPException(status_code=500, detail=f"Error processing chat messages for streaming: {str(e)}")
 
     # Tokenize the prompt(s). batch_stream_generate_text expects tokenized input.
-    # Ensure left-padding if it becomes relevant for future batch > 1 streaming.
-    # For now, with batch_size = 1, padding strategy is less critical.
     if tokenizer_instance._tokenizer.pad_token is None:
         tokenizer_instance._tokenizer.pad_token = tokenizer_instance.eos_token
-        # tokenizer_instance._tokenizer.pad_token_id = tokenizer_instance.eos_token_id # Already handled by TokenizerWrapper typically
-    tokenizer_instance._tokenizer.padding_side = 'left' # Good practice for generation
+    tokenizer_instance._tokenizer.padding_side = 'left'
 
-    # We are processing one request at a time from the API perspective for now.
-    # So, a batch of one prompt_text.
-    # `tokenizer_instance._tokenizer` is the underlying Hugging Face tokenizer.
-    prompts_tokens_list = [prompt_text] # List of one prompt string
+    prompts_tokens_list = [prompt_text]
     try:
-        # We need mx.array(tokenizer._tokenizer(prompts_list, padding=True)['input_ids'])
-        # For a single prompt, padding=False is fine, but batch_stream_generate expects a batch.
-        encoded_prompts = tokenizer_instance._tokenizer(prompts_tokens_list, return_tensors="np", padding=False) # Use np for mx.array
+        encoded_prompts = tokenizer_instance._tokenizer(
+            prompts_tokens_list, return_tensors="np", padding=False
+        )
         prompts_mx_array = mx.array(encoded_prompts["input_ids"])
     except Exception as e:
         logging.error(f"Error tokenizing prompt for model {model_id} during stream: {e}")
@@ -498,60 +557,49 @@ async def _chat_completion_stream_generator(
     generation_kwargs = {
         "temp": request.temperature if request.temperature is not None else 0.7,
         "top_p": request.top_p if request.top_p is not None else 1.0,
-        # Add other relevant parameters from request if batch_stream_generate_text supports them
     }
 
     try:
-        # Assuming batch_stream_generate_text handles a batch of 1 correctly.
-        # It yields List[Tuple[Optional[str], Optional[str]]]
         for batch_deltas_and_reasons in batch_stream_generate_text(
             model_instance,
-            tokenizer_instance, # Already a TokenizerWrapper
+            tokenizer_instance,
             prompts_mx_array,
             request.max_tokens or 1024,
-            **generation_kwargs
+            **generation_kwargs,
         ):
-            # For now, we are handling n=1, so we only care about the first element of the batch.
             text_delta, finish_reason = batch_deltas_and_reasons[0]
 
             choice_delta = DeltaMessage()
-            if first_chunk and text_delta is not None: # text_delta can be empty string initially
+            if first_chunk and text_delta is not None:
                 choice_delta.role = "assistant"
                 first_chunk = False
-            
+
             if text_delta is not None:
                 choice_delta.content = text_delta
-            
-            if finish_reason:
-                # If there's a final text_delta along with finish_reason, ensure it's included.
-                # This should be handled by batch_stream_generate_text logic.
-                pass # delta content is already set if any
 
             # Only send a chunk if there's content or it's a finish chunk
             if choice_delta.content or choice_delta.role or finish_reason:
                 stream_choice = ChatCompletionStreamChoice(
-                    index=0, 
-                    delta=choice_delta, 
-                    finish_reason=finish_reason
+                    index=0,
+                    delta=choice_delta,
+                    finish_reason=finish_reason,
                 )
                 chunk = ChatCompletionChunk(
-                    id=request_id, 
-                    model=model_id, 
-                    choices=[stream_choice]
+                    id=request_id,
+                    model=model_id,
+                    choices=[stream_choice],
                 )
                 yield f"data: {chunk.model_dump_json()}\n\n"
-            
+
             if finish_reason:
-                break # Stop streaming for this request if finished
+                break
 
     except Exception as e:
         logging.error(f"Error during model generation stream for {model_id}: {e}", exc_info=True)
-        # Yield a final error message in SSE format if possible, or just log.
-        # For simplicity, we'll just stop. A robust implementation might send an error SSE.
         error_delta = DeltaMessage(content=f"\n\nError during generation: {str(e)}")
         error_choice = ChatCompletionStreamChoice(index=0, delta=error_delta, finish_reason="error")
         error_chunk = ChatCompletionChunk(id=request_id, model=model_id, choices=[error_choice])
-        yield f"data: {error_chunk.model_dump_json()}\n\n" # Try to send an error chunk
+        yield f"data: {error_chunk.model_dump_json()}\n\n"
     finally:
         yield f"data: [DONE]\n\n"
 
@@ -574,14 +622,26 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     if request.stream:
         logging.info(f"Streaming request received for model {model_id}. Stream flag: {request.stream}")
-        # TODO: Handle n > 1 for streaming if supported by batch_stream_generate_text properly.
-        # For now, n=1 is assumed by how stream_generator processes batch_deltas_and_reasons[0]
         if request.n is not None and request.n > 1:
             raise HTTPException(status_code=400, detail="Streaming with n > 1 is not currently supported.")
-        return StreamingResponse(
-            _chat_completion_stream_generator(request, model_id, model_instance, tokenizer_instance),
-            media_type="text/event-stream"
-        )
+
+        # Enqueue for co-batched streaming
+        queued = StreamQueuedChat(request)
+        await STREAM_CHAT_QUEUE.put(queued)
+
+        async def sse_stream():
+            async with STREAMING_SEMAPHORE:
+                try:
+                    while True:
+                        chunk = await queued.queue.get()
+                        if chunk == "__DONE__":
+                            break
+                        yield chunk
+                finally:
+                    # Ensure terminator sent
+                    yield "data: [DONE]\n\n"
+
+        return StreamingResponse(sse_stream(), media_type="text/event-stream")
     else:
         # Non-streaming (existing logic)
         # Ensure non-streaming requests with n > 1 are handled by the batch worker
@@ -640,35 +700,57 @@ async def batch_processing_worker():
 
         try:
             # Wait for the first request
-            try:
-                if not batch_to_process: # Only wait if batch is empty
+            # Fast path: if queue already has items, drain up to MAX_BATCH_SIZE immediately
+            if REQUEST_QUEUE.qsize() > 0:
+                first_request_received_time = asyncio.get_event_loop().time()
+                try:
+                    while len(batch_to_process) < MAX_BATCH_SIZE:
+                        item = REQUEST_QUEUE.get_nowait()
+                        batch_to_process.append(item)
+                        REQUEST_QUEUE.task_done()
+                except asyncio.QueueEmpty:
+                    pass
+            # Slow path: wait up to BATCH_TIMEOUT for the first item
+            if not batch_to_process:
+                try:
                     queued_item = await asyncio.wait_for(REQUEST_QUEUE.get(), timeout=BATCH_TIMEOUT)
                     batch_to_process.append(queued_item)
                     REQUEST_QUEUE.task_done() # Mark as processed from queue perspective
                     first_request_received_time = asyncio.get_event_loop().time()
-            except asyncio.TimeoutError:
-                # This timeout means no request arrived to start a batch.
-                # Continue to the start of the loop to re-check for model and then wait again.
-                continue
+                except asyncio.TimeoutError:
+                    # This timeout means no request arrived to start a batch.
+                    # Continue to the start of the loop to re-check for model and then wait again.
+                    continue
 
             # Try to gather more requests for the batch if the first one was received
             if first_request_received_time:
                 while len(batch_to_process) < MAX_BATCH_SIZE:
                     elapsed_time = asyncio.get_event_loop().time() - first_request_received_time
                     remaining_time_for_batch_window = BATCH_TIMEOUT - elapsed_time
-                    
-                    if remaining_time_for_batch_window <= 0:
-                        break # Batch window timeout reached
 
+                    if remaining_time_for_batch_window <= 0:
+                        break  # Batch window timeout reached
+
+                    # Drain immediately available items first without awaiting
                     try:
-                        # Poll queue with a very short timeout to see if more items are immediately available
-                        # or up to remaining_time_for_batch_window
-                        queued_item = await asyncio.wait_for(REQUEST_QUEUE.get(), timeout=min(0.001, remaining_time_for_batch_window))
+                        while len(batch_to_process) < MAX_BATCH_SIZE:
+                            queued_item = REQUEST_QUEUE.get_nowait()
+                            batch_to_process.append(queued_item)
+                            REQUEST_QUEUE.task_done()
+                    except asyncio.QueueEmpty:
+                        pass
+
+                    if len(batch_to_process) >= MAX_BATCH_SIZE:
+                        break
+
+                    # Await at most the remaining window for the next item
+                    try:
+                        queued_item = await asyncio.wait_for(
+                            REQUEST_QUEUE.get(), timeout=max(0.0, remaining_time_for_batch_window)
+                        )
                         batch_to_process.append(queued_item)
                         REQUEST_QUEUE.task_done()
                     except asyncio.TimeoutError:
-                        break # No more items arrived within the short poll or window ended
-                    except asyncio.QueueEmpty: # Should be caught by TimeoutError with wait_for
                         break
 
 
@@ -691,14 +773,17 @@ async def batch_processing_worker():
             # Common defaults, overridden by first request if present
             max_tokens = 100 
             temp = 0.7
+            top_p = 1.0
 
             if isinstance(first_req_data_for_params, CompletionRequest):
                 max_tokens = first_req_data_for_params.max_tokens if first_req_data_for_params.max_tokens is not None else max_tokens
                 temp = first_req_data_for_params.temperature if first_req_data_for_params.temperature is not None else temp
+                top_p = first_req_data_for_params.top_p if first_req_data_for_params.top_p is not None else top_p
             elif isinstance(first_req_data_for_params, ChatCompletionRequest):
                 max_tokens = first_req_data_for_params.max_tokens if first_req_data_for_params.max_tokens is not None else max_tokens
                 temp = first_req_data_for_params.temperature if first_req_data_for_params.temperature is not None else temp
-            # Add other parameters like top_p, etc., if they become part of batching strategy
+                top_p = first_req_data_for_params.top_p if first_req_data_for_params.top_p is not None else top_p
+            # Add other parameters like repetition penalties later if needed
             
             # --- Prompt Preparation & Expansion for 'n' parameter ---
             expanded_prompts_for_batch: List[str] = []
@@ -737,8 +822,8 @@ async def batch_processing_worker():
                             current_tokenizer_instance = TokenizerWrapper(current_tokenizer_instance)
 
                         chat_history = [msg.model_dump(exclude_none=True) for msg in request_data.messages]
-                        prompt_text_for_req = current_tokenizer_instance.apply_chat_template(
-                            chat_history, tokenize=False, add_generation_prompt=True
+                        prompt_text_for_req = apply_chat_template_cached(
+                            current_tokenizer_instance, chat_history, add_generation_prompt=True
                         )
                         req_type_for_req = "chat_completion"
                     else:
@@ -776,13 +861,48 @@ async def batch_processing_worker():
             try:
                 # Call the batch_generate_text utility
                 logging.info(f"Calling batch_generate_text_util with {len(expanded_prompts_for_batch)} expanded prompts.")
-                generated_results_batch: List[Tuple[str, int, int]] = await batch_generate_text_util(
+                try:
+                    q_depth = REQUEST_QUEUE.qsize()
+                except Exception:
+                    q_depth = -1
+                if MAX_BATCH_SIZE > 0:
+                    fill_pct = (len(expanded_prompts_for_batch) / MAX_BATCH_SIZE) * 100.0
+                else:
+                    fill_pct = 0.0
+                logging.info(f"Batch fill={fill_pct:.1f}% (queue_depth={q_depth})")
+                try:
+                    METRICS["batches_processed"] += 1
+                    METRICS["batch_fill_acc"] += fill_pct
+                    METRICS["batch_fill_samples"] += 1
+                    METRICS["queue_depth_last"] = int(q_depth)
+                except Exception:
+                    pass
+                # De-duplicate identical prompts within this batch to avoid redundant compute
+                unique_prompts: List[str] = []
+                unique_map: Dict[str, int] = {}
+                positions_for_unique: List[List[int]] = []
+                for idx, ptxt in enumerate(expanded_prompts_for_batch):
+                    if ptxt in unique_map:
+                        positions_for_unique[unique_map[ptxt]].append(idx)
+                    else:
+                        unique_map[ptxt] = len(unique_prompts)
+                        unique_prompts.append(ptxt)
+                        positions_for_unique.append([idx])
+
+                unique_results: List[Tuple[str, int, int]] = await batch_generate_text_util(
                     model=model,
                     tokenizer=tokenizer,
-                    prompts=expanded_prompts_for_batch,
+                    prompts=unique_prompts,
                     max_tokens=max_tokens, # Consolidated from first request in batch
                     temp=temp,             # Consolidated from first request in batch
+                    top_p=top_p,
                 )
+
+                # Expand back to match original ordering
+                generated_results_batch: List[Tuple[str, int, int]] = [None] * len(expanded_prompts_for_batch)  # type: ignore
+                for uidx, positions in enumerate(positions_for_unique):
+                    for pos in positions:
+                        generated_results_batch[pos] = unique_results[uidx]
 
                 # --- Distribute Results ---
                 if len(generated_results_batch) != len(expanded_prompts_for_batch):
@@ -816,12 +936,15 @@ async def batch_processing_worker():
 
                     text_result, num_prompt_toks_for_this_gen, num_compl_toks_for_this_gen = generated_results_batch[i]
                     
-                    # Determine finish_reason (simplified for now)
-                    # TODO: Get this accurately from batch_generate_text_util or calculate based on max_tokens per request
-                    # This needs the specific max_tokens of original_req_data_tuple_val, not the consolidated one.
-                    # current_max_tokens = original_req_data_tuple_val.max_tokens if original_req_data_tuple_val.max_tokens is not None else max_tokens # Fallback to consolidated
-                    # finish_reason_val = "length" if num_compl_toks_for_this_gen >= current_max_tokens else "stop"
-                    finish_reason_val = "stop" # Placeholder, as in existing TODO
+                    # Determine finish_reason using per-request max_tokens if provided
+                    current_max_tokens = (
+                        original_req_data_tuple_val.max_tokens
+                        if getattr(original_req_data_tuple_val, "max_tokens", None) is not None
+                        else max_tokens
+                    )
+                    finish_reason_val = (
+                        "length" if num_compl_toks_for_this_gen >= current_max_tokens else "stop"
+                    )
 
                     choice_data_dict: Dict[str, Any]
                     if isinstance(original_req_data_tuple_val, CompletionRequest):
@@ -924,3 +1047,119 @@ async def batch_processing_worker():
 #     # Uvicorn would be run from the command line, e.g.:
 #     # uvicorn mlx_parallm.server.main:app --host 0.0.0.0 --port 8000 --reload
 #     pass 
+async def streaming_batch_worker():
+    """Co-batch streaming chat completions to share compute.
+
+    Groups pending streaming chat requests by model, applies chat templates,
+    tokenizes together, and streams per-step deltas back to each client's SSE queue.
+    """
+    global model_registry
+    logging.info("Streaming batch worker starting.")
+    while True:
+        try:
+            queued_first: StreamQueuedChat = await STREAM_CHAT_QUEUE.get()
+            model_id = queued_first.request.model
+            rec = model_registry.get(model_id)
+            if not rec or rec.status != ModelStatus.LOADED or not rec.model_instance or not rec.tokenizer_instance:
+                # Fail this request
+                await queued_first.queue.put("data: {\"error\":{\"message\":\"Model not ready\"}}\n\n")
+                await queued_first.queue.put("__DONE__")
+                continue
+
+            # Gather compatible requests within the batch window
+            batch_requests: List[StreamQueuedChat] = [queued_first]
+            start_t = asyncio.get_event_loop().time()
+            while len(batch_requests) < MAX_BATCH_SIZE:
+                remaining = STREAM_BATCH_TIMEOUT - (asyncio.get_event_loop().time() - start_t)
+                if remaining <= 0:
+                    break
+                try:
+                    nxt: StreamQueuedChat = await asyncio.wait_for(STREAM_CHAT_QUEUE.get(), timeout=remaining)
+                    if nxt.request.model == model_id:
+                        batch_requests.append(nxt)
+                    else:
+                        # Put back if model mismatch
+                        await STREAM_CHAT_QUEUE.put(nxt)
+                        break
+                except asyncio.TimeoutError:
+                    break
+
+            model = rec.model_instance
+            tok = rec.tokenizer_instance
+            if not isinstance(tok, TokenizerWrapper):
+                tok = TokenizerWrapper(tok)
+
+            # Prepare prompts via chat template
+            prompts_text: List[str] = []
+            for item in batch_requests:
+                try:
+                    messages_for_template = [m.model_dump(exclude_none=True) for m in item.request.messages]
+                    text = apply_chat_template_cached(tok, messages_for_template, add_generation_prompt=True)
+                    prompts_text.append(text)
+                except Exception as e:
+                    await item.queue.put(f"data: {{\"error\":{{\"message\":\"Template error: {str(e)}\"}}}}\n\n")
+                    await item.queue.put("__DONE__")
+                    # Mark to skip in generation
+                    prompts_text.append("")
+
+            if tok._tokenizer.pad_token is None:
+                tok._tokenizer.pad_token = tok.eos_token
+            tok._tokenizer.padding_side = 'left'
+            enc = tok._tokenizer(prompts_text, return_tensors="np", padding=True)
+            prompts_mx = mx.array(enc["input_ids"])  # shape (B, T)
+
+            # Consolidate params from the first request
+            first_req = batch_requests[0].request
+            max_tokens = first_req.max_tokens or 1024
+            temperature = first_req.temperature if first_req.temperature is not None else 0.7
+            top_p = first_req.top_p if first_req.top_p is not None else 1.0
+
+            # Initialize per-stream ids and first chunk flags
+            first_chunk_flags = [True] * len(batch_requests)
+
+            # Drive batch stream and dispatch per-client chunks
+            try:
+                for step in batch_stream_generate_text(
+                    model,
+                    tok,
+                    prompts_mx,
+                    max_tokens,
+                    temp=temperature,
+                    top_p=top_p,
+                ):
+                    # step: List[Tuple[Optional[str], Optional[str]]] per sequence
+                    for i, (delta_text, finish_reason) in enumerate(step):
+                        item = batch_requests[i]
+                        choice_delta = DeltaMessage()
+                        if first_chunk_flags[i] and delta_text is not None:
+                            choice_delta.role = "assistant"
+                            first_chunk_flags[i] = False
+                        if delta_text is not None:
+                            choice_delta.content = delta_text
+                        stream_choice = ChatCompletionStreamChoice(
+                            index=0,
+                            delta=choice_delta,
+                            finish_reason=finish_reason,
+                        )
+                        chunk = ChatCompletionChunk(
+                            id=item.id,
+                            model=model_id,
+                            choices=[stream_choice],
+                        )
+                        await item.queue.put(f"data: {chunk.model_dump_json()}\n\n")
+                # Done; signal end to all
+                for item in batch_requests:
+                    await item.queue.put("__DONE__")
+                try:
+                    METRICS["stream_batches_processed"] += 1
+                except Exception:
+                    pass
+            except Exception as e:
+                logging.error(f"Error in streaming batch generation: {e}", exc_info=True)
+                for item in batch_requests:
+                    await item.queue.put(f"data: {{\"error\":{{\"message\":\"{str(e)}\"}}}}\n\n")
+                    await item.queue.put("__DONE__")
+
+        except Exception as outer:
+            logging.error(f"Streaming batch worker outer error: {outer}", exc_info=True)
+            await asyncio.sleep(0.05)

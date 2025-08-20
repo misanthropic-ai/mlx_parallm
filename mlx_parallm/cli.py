@@ -23,6 +23,10 @@ class ServerCLIArgs(Cmd):
         description="Optional path to a LoRA/DoRA adapter to load at startup.",
         cli=["--lora-path"],
     )
+    max_batch_size: int = Field(8, description="Max batch size for dynamic batching.", cli=["--max-batch-size"])
+    batch_timeout: float = Field(0.1, description="Batching window in seconds.", cli=["--batch-timeout"])
+    request_timeout_seconds: float = Field(600.0, description="Per-request processing timeout (seconds).", cli=["--request-timeout-seconds"])
+    max_concurrent_streams: int = Field(4, description="Limit for concurrent streaming responses to protect batch throughput.", cli=["--max-concurrent-streams"])
     # We'll add more arguments like workers, log_level, config_file later
     # Log level for Uvicorn can be set directly in uvicorn.run
 

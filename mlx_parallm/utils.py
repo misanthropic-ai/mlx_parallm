@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
+from collections import OrderedDict
+import json
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -130,6 +132,160 @@ def load_model_and_tokenizer(
     return model, tokenizer
 
 
+# --------- Lightweight Tokenization Cache (LRU) ---------
+
+class _LRUCache:
+    def __init__(self, max_size: int = 2048):
+        self.max_size = max_size
+        self._store: OrderedDict[str, Any] = OrderedDict()
+
+    def get(self, key: str):
+        if key in self._store:
+            self._store.move_to_end(key)
+            return self._store[key]
+        return None
+
+    def set(self, key: str, value: Any):
+        self._store[key] = value
+        self._store.move_to_end(key)
+        if len(self._store) > self.max_size:
+            self._store.popitem(last=False)
+
+
+_encode_lru = _LRUCache(max_size=4096)
+
+
+def encode_cached(tokenizer: TokenizerWrapper, text: str) -> List[int]:
+    """LRU-cached encoding for single-string prompts."""
+    key = f"tok:{id(tokenizer._tokenizer)}:{text}"
+    val = _encode_lru.get(key)
+    if val is not None:
+        return val
+    enc = tokenizer.encode(text)
+    _encode_lru.set(key, enc)
+    return enc
+
+
+# --------- Chat Template Cache (LRU) ---------
+
+_chat_template_lru = _LRUCache(max_size=2048)
+
+
+def _messages_cache_key(messages: List[Dict[str, Any]]) -> str:
+    # Canonical JSON using sorted keys; include roles and content only
+    minimal = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
+    return json.dumps(minimal, sort_keys=True, separators=(",", ":"))
+
+
+def apply_chat_template_cached(
+    tokenizer: TokenizerWrapper,
+    messages: List[Dict[str, Any]],
+    *,
+    add_generation_prompt: bool = True,
+) -> str:
+    key = f"cht:{id(tokenizer._tokenizer)}:{'1' if add_generation_prompt else '0'}:{_messages_cache_key(messages)}"
+    val = _chat_template_lru.get(key)
+    if val is not None:
+        return val
+    text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=add_generation_prompt
+    )
+    _chat_template_lru.set(key, text)
+    return text
+
+
+# --------- Simple KV Cache Pool ---------
+
+class _KVPool:
+    """Pool of BatchedKVCache lists to avoid reallocation between calls.
+
+    Keyed by (head_dim, tuple(kv_heads), batch_size).
+    """
+
+    def __init__(self):
+        self._pool: Dict[Tuple[int, Tuple[int, ...], int], List[BatchedKVCache]] = {}
+
+    def get(self, head_dim: int, kv_heads: List[int], batch_size: int, *, step: Optional[int] = None) -> List[BatchedKVCache]:
+        key = (head_dim, tuple(kv_heads), batch_size)
+        caches = self._pool.get(key)
+        if caches is None:
+            caches = [BatchedKVCache(head_dim, n, batch_size) for n in kv_heads]
+            if step is not None:
+                for c in caches:
+                    c.step = step
+            self._pool[key] = caches
+        else:
+            for c in caches:
+                c.reset(batch_size)
+                if step is not None:
+                    c.step = step
+        return caches
+
+
+_kv_pool = _KVPool()
+
+
+# --------- Global Prefix KV Cache (LRU) ---------
+
+class _GlobalPrefixCache:
+    """Stores prefilled KV for frequent global prefixes.
+
+    Each entry stores per-layer (keys, values) tensors for a single-sequence
+    cache up to a certain prefix length. On reuse, we tile across the batch
+    dimension and set the offset accordingly.
+    """
+
+    def __init__(self, capacity: int = 4, min_tokens: int = 64):
+        self.capacity = capacity
+        self.min_tokens = min_tokens
+        self._store: OrderedDict[Tuple[int, ...], List[Tuple[mx.array, mx.array, int]]] = OrderedDict()
+
+    def get(self, prefix_tokens: Tuple[int, ...]):
+        if prefix_tokens in self._store:
+            self._store.move_to_end(prefix_tokens)
+            return self._store[prefix_tokens]
+        return None
+
+    def put(self, prefix_tokens: Tuple[int, ...], layer_kv: List[Tuple[mx.array, mx.array, int]]):
+        if len(prefix_tokens) < self.min_tokens:
+            return
+        self._store[prefix_tokens] = layer_kv
+        self._store.move_to_end(prefix_tokens)
+        while len(self._store) > self.capacity:
+            self._store.popitem(last=False)
+
+    def build_caches_for_batch(
+        self,
+        model: nn.Module,
+        batch_size: int,
+        prefix_tokens: Tuple[int, ...],
+    ) -> Optional[List[BatchedKVCache]]:
+        entry = self.get(prefix_tokens)
+        if entry is None:
+            return None
+        # Build batched caches by tiling the stored single-seq kv
+        kv_heads = (
+            [model.n_kv_heads] * len(model.layers)
+            if isinstance(model.n_kv_heads, int)
+            else model.n_kv_heads
+        )
+        caches = _kv_pool.get(model.head_dim, kv_heads, batch_size)
+        for i, (k1, v1, offset) in enumerate(entry):
+            # k1, v1 shapes: (1, n_kv_heads, T, head_dim)
+            # Tile to (B, ...)
+            if k1 is None or v1 is None:
+                continue
+            kbat = mx.tile(k1, (batch_size, 1, 1, 1))
+            vbat = mx.tile(v1, (batch_size, 1, 1, 1))
+            caches[i].keys = kbat
+            caches[i].values = vbat
+            caches[i].offset = offset
+        return caches
+
+
+_global_prefix_cache = _GlobalPrefixCache(capacity=4, min_tokens=64)
+
+
 def apply_repetition_penalty(logits: mx.array, generated_tokens: Any, penalty: float):
     """
     Apply repetition penalty to specific logits based on the given context.
@@ -163,6 +319,7 @@ def generate_step(
     repetition_context_size: Optional[int] = 20,
     top_p: float = 1.0,
     logit_bias: Optional[Dict[int, float]] = None,
+    cache: Optional[List[BatchedKVCache]] = None,
 ) -> Generator[Tuple[mx.array, mx.array], None, None]:
     """
     A generator producing token ids based on the given prompt from the model.
@@ -223,7 +380,18 @@ def generate_step(
         else model.n_kv_heads
     )
 
-    cache = [BatchedKVCache(model.head_dim, n, y.shape[0]) for n in kv_heads]
+    # Use a small pool to reuse KV allocations across calls of the same shape
+    try:
+        head_dim = model.head_dim
+    except Exception:
+        # Fallback: infer from logits/heads if head_dim not available
+        head_dim = None
+    if cache is None:
+        if head_dim is not None:
+            # Use an allocation step tuned to expected decode length if known (keep default here)
+            cache = _kv_pool.get(head_dim, kv_heads, y.shape[0])
+        else:
+            cache = [BatchedKVCache(model.head_dim, n, y.shape[0]) for n in kv_heads]
 
     repetition_context = prompts
 
@@ -405,7 +573,8 @@ def generate(
     if verbose:
         print("=" * 10)
         print("Prompt:", prompt)
-    prompt_tokens = mx.array(tokenizer.encode(prompt))[None]
+    # Use cached encoding for single prompt
+    prompt_tokens = mx.array(encode_cached(tokenizer, prompt))[None]
     detokenizer = tokenizer.detokenizer
 
     tic = time.perf_counter()
@@ -921,7 +1090,7 @@ async def batch_generate_text(
     prompts: List[str],
     max_tokens: int = 100,
     temp: float = 0.7,
-    # top_p: float = 1.0, # Add if support is needed later
+    top_p: float = 1.0,
     # repetition_penalty: float = 1.0, # Add if support is needed later
 ) -> List[Tuple[str, int, int]]:
     """
@@ -1025,16 +1194,90 @@ async def batch_generate_text(
                 logging.warning(f"Multiple EOS tokens found: {eos_token_id}. Using the first one for generation stop.")
                 eos_token_id = list(eos_token_id)[0] if eos_token_id else None # Or handle error appropriately
 
-        current_tokens_for_step = initial_prompt_tokens_mx
-        
-        # KVCache needs to be managed per call to generate_step if model is stateless, 
-        # or it's managed internally by generate_step if it's stateful across yields.
-        # The generate_step in this utils.py seems to create its own cache internally for its loop.
-        # We are mimicking the loop of generate_step but for a fixed number of max_tokens.
+        # Compute real tokens per sequence and the longest common prefix (LCP)
+        seqs = []
+        for ids, mask in zip(prompt_tokens_np, attention_mask_np):
+            seq = ids[mask.astype(bool) == 1].tolist()
+            seqs.append(seq)
+        lcp_len = 0
+        if len(seqs) > 1:
+            # Find LCP length by comparing tokens from start
+            for pos in range(min(len(s) for s in seqs)):
+                tok0 = seqs[0][pos]
+                if all(s[pos] == tok0 for s in seqs):
+                    lcp_len += 1
+                else:
+                    break
+        elif len(seqs) == 1:
+            lcp_len = len(seqs[0])
 
-        # The generate_step function as defined in this file is a generator itself.
-        # We need to iterate over it, max_tokens times.
-        # output_collector = [[] for _ in range(batch_size)]
+        # Prepare KV caches from pool
+        kv_heads_list = (
+            [model.n_kv_heads] * len(model.layers)
+            if isinstance(model.n_kv_heads, int)
+            else model.n_kv_heads
+        )
+        # Estimate an allocation step to reduce reallocation: target roughly suffix length + max_tokens
+        est_suffix = max((len(s) for s in suffixes), default=0)
+        # Cap to a reasonable power-of-two-ish block size
+        desired = max(256, min(8192, int(((est_suffix + max_tokens) // 256 + 1) * 256)))
+        caches = _kv_pool.get(model.head_dim, kv_heads_list, batch_size, step=desired)
+
+        # Optional prefill using global prefix cache or LCP to seed caches
+        if lcp_len > 0:
+            lcp_tokens = tuple(seqs[0][:lcp_len])
+            # Try global prefix cache first (only if length beyond threshold)
+            reused = False
+            if len(lcp_tokens) >= _global_prefix_cache.min_tokens:
+                reused_caches = _global_prefix_cache.build_caches_for_batch(model, batch_size, lcp_tokens)
+                if reused_caches is not None:
+                    caches = reused_caches
+                    try:
+                        import logging as _logging
+                        _logging.info("Global prefix cache reused (len=%d) for batch_size=%d", len(lcp_tokens), batch_size)
+                    except Exception:
+                        pass
+                    reused = True
+
+            if not reused:
+                lcp_np = np.tile(np.array(lcp_tokens, dtype=np.int64), (batch_size, 1))
+                lcp_mx = mx.array(lcp_np)
+                # One forward pass to populate caches with shared prefix
+                _ = model(lcp_mx, cache=caches)
+                # Store single-seq KV snapshot for potential reuse
+                try:
+                    layer_kv = []
+                    for c in caches:
+                        if c.keys is None or c.values is None or c.offset <= 0:
+                            layer_kv.append((None, None, 0))
+                            continue
+                        # Take first batch row as reference single sequence
+                        k1 = c.keys[:1, :, : c.offset, :]
+                        v1 = c.values[:1, :, : c.offset, :]
+                        layer_kv.append((k1, v1, c.offset))
+                    _global_prefix_cache.put(lcp_tokens, layer_kv)
+                    try:
+                        import logging as _logging
+                        _logging.info("Global prefix cache stored (len=%d)", len(lcp_tokens))
+                    except Exception:
+                        pass
+                except Exception:
+                    # Best-effort; ignore if snapshot fails
+                    pass
+
+        # Build suffix batch (may be empty if entire prompt is LCP)
+        suffixes = [seq[lcp_len:] for seq in seqs]
+        max_suffix_len = max((len(s) for s in suffixes), default=0)
+        pad_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
+        if max_suffix_len > 0:
+            suffix_padded = []
+            for s in suffixes:
+                pad_len = max_suffix_len - len(s)
+                suffix_padded.append(([pad_id] * pad_len) + s)
+            suffix_batch = mx.array(np.array(suffix_padded, dtype=np.int64))
+        else:
+            # No suffix; provide a single pad token to trigger the first generation step
+            suffix_batch = mx.array(np.array([[pad_id]] * batch_size, dtype=np.int64))
 
         generated_tokens_per_prompt = [[] for _ in range(batch_size)]
 
@@ -1043,10 +1286,12 @@ async def batch_generate_text(
         # Let's use the existing generate_step directly.
         
         # `generate_step` args. For batch, `repetition_penalty` needs careful handling if enabled.
-        gen_step_kwargs = {"temp": temp} # Add top_p etc. if needed
+        gen_step_kwargs = {"temp": temp, "top_p": top_p}
         
         # This loop iterates `max_tokens` times. In each iteration, `generate_step` yields one new token for each active sequence.
-        for step_num, (batch_next_token_ids, _) in enumerate(generate_step(initial_prompt_tokens_mx, model, **gen_step_kwargs)):
+        for step_num, (batch_next_token_ids, _) in enumerate(
+            generate_step(suffix_batch, model, cache=caches, **gen_step_kwargs)
+        ):
             if step_num >= max_tokens: # Overall max_tokens for new generation
                 break
 
