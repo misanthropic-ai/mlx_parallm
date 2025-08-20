@@ -1,0 +1,104 @@
+INFO:root:mlx_parallm_train starting
+INFO:root:Server thread launched; waiting for readiness...
+INFO:     Started server process [46707]
+INFO:     Waiting for application startup.
+INFO:root:Attempting to load initial model from CLI: NousResearch/Hermes-4-Qwen3-14B-1-e3
+Fetching 17 files:   0%|          | 0/17 [00:00<?, ?it/s]Fetching 17 files: 100%|██████████| 17/17 [00:00<00:00, 81303.50it/s]
+INFO:root:Successfully loaded model: NousResearch/Hermes-4-Qwen3-14B-1-e3
+INFO:root:Model NousResearch/Hermes-4-Qwen3-14B-1-e3 registered with status: loaded
+INFO:root:Batch processing worker task created.
+INFO:root:Batch processing worker starting. MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.1s
+INFO:root:Batch worker successfully retrieved model 'NousResearch/Hermes-4-Qwen3-14B-1-e3'.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:root:Registered with Atropos, UUID: 338710894338860294076268230920935369909
+INFO:root:Polling for batch... attempt 5
+INFO:root:Polling for batch... attempt 10
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Processing batch of 4 requests.
+INFO:root:Calling batch_generate_text_util with 7 expanded prompts.
+INFO:root:Using tokenizer's model_max_length: 131072
+WARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.
+INFO:root:Final effective_max_length for tokenizer: 65536
+INFO:root:Polling for batch... attempt 15
+INFO:root:Polling for batch... attempt 20
+INFO:root:Polling for batch... attempt 25
+INFO:root:Polling for batch... attempt 30
+INFO:root:Polling for batch... attempt 35
+INFO:root:Polling for batch... attempt 40
+INFO:root:Polling for batch... attempt 45
+INFO:root:Polling for batch... attempt 50
+INFO:root:Polling for batch... attempt 55
+INFO:root:Polling for batch... attempt 60
+INFO:root:Polling for batch... attempt 65
+INFO:root:Polling for batch... attempt 70
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Polling for batch... attempt 75
+INFO:root:Polling for batch... attempt 80
+INFO:root:Polling for batch... attempt 85
+INFO:root:Polling for batch... attempt 90
+INFO:root:Polling for batch... attempt 95
+INFO:root:Polling for batch... attempt 100
+INFO:root:Polling for batch... attempt 105
+INFO:root:Polling for batch... attempt 110
+INFO:root:Polling for batch... attempt 115
+INFO:root:Polling for batch... attempt 120
+INFO:root:Polling for batch... attempt 125
+INFO:root:Polling for batch... attempt 130
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+INFO:root:Polling for batch... attempt 135
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Polling for batch... attempt 140
+INFO:root:Polling for batch... attempt 145
+INFO:root:Polling for batch... attempt 150
+INFO:root:Polling for batch... attempt 155
+INFO:root:Polling for batch... attempt 160
+INFO:root:Polling for batch... attempt 165
+INFO:root:Polling for batch... attempt 170
+INFO:root:Polling for batch... attempt 175
+INFO:root:Polling for batch... attempt 180
+INFO:root:Polling for batch... attempt 185
+INFO:root:Polling for batch... attempt 190
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+INFO:root:Polling for batch... attempt 195
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Polling for batch... attempt 200
+INFO:root:Polling for batch... attempt 205
+INFO:root:Polling for batch... attempt 210
+INFO:root:Polling for batch... attempt 215
+INFO:root:Polling for batch... attempt 220
+INFO:root:Polling for batch... attempt 225
+INFO:root:Polling for batch... attempt 230
+INFO:root:Polling for batch... attempt 235
+INFO:root:Polling for batch... attempt 240
+INFO:root:Polling for batch... attempt 245
+INFO:root:Polling for batch... attempt 250
+INFO:root:Polling for batch... attempt 255
+ERROR:root:Chat request timed out for model NousResearch/Hermes-4-Qwen3-14B-1-e3 after 60.0 seconds.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Polling for batch... attempt 260
+INFO:root:Polling for batch... attempt 265
+INFO:root:Polling for batch... attempt 270
+INFO:root:Polling for batch... attempt 275
+INFO:root:Polling for batch... attempt 280
+INFO:root:Polling for batch... attempt 285
+INFO:root:Polling for batch... attempt 290

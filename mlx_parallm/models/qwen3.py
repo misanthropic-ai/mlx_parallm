@@ -71,23 +71,31 @@ class Attention(nn.Module):
         values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
         
         if cache is not None:
-            # Update cache and apply RoPE with per-row offsets if available
-            keys, values = cache.update_and_fetch(keys, values)
+            # Apply RoPE to both queries and keys using per-row offsets
             try:
                 offsets = getattr(cache, "offsets", [getattr(cache, "offset", 0)])
             except Exception:
                 offsets = [getattr(cache, "offset", 0)]
+
             if isinstance(offsets, list) and len(offsets) == queries.shape[0]:
                 Bq = queries.shape[0]
                 q_list = []
+                k_list = []
                 for b in range(Bq):
-                    q_list.append(self.rope(queries[b:b+1], offset=int(offsets[b])))
+                    off_b = int(offsets[b])
+                    q_list.append(self.rope(queries[b:b+1], offset=off_b))
+                    k_list.append(self.rope(keys[b:b+1], offset=off_b))
                 queries = mx.concatenate(q_list, axis=0)
+                keys = mx.concatenate(k_list, axis=0)
             else:
                 prev_offset = int(getattr(cache, "offset", 0))
                 queries = self.rope(queries, offset=prev_offset)
-            keys = self.rope(keys)
+                keys = self.rope(keys, offset=prev_offset)
+
+            # Now append roped keys/values to cache and fetch full KV up to max length
+            keys, values = cache.update_and_fetch(keys, values)
         else:
+            # No cache: standard RoPE on current chunk
             queries = self.rope(queries)
             keys = self.rope(keys)
         

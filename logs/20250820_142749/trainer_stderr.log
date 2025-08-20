@@ -1,0 +1,36 @@
+INFO:root:mlx_parallm_train starting
+INFO:root:Server thread launched; waiting for readiness...
+INFO:     Started server process [13981]
+INFO:     Waiting for application startup.
+INFO:root:Attempting to load initial model from CLI: NousResearch/Hermes-4-Qwen3-14B-1-e3
+Fetching 17 files:   0%|          | 0/17 [00:00<?, ?it/s]Fetching 17 files: 100%|██████████| 17/17 [00:00<00:00, 170174.63it/s]
+INFO:root:Successfully loaded model: NousResearch/Hermes-4-Qwen3-14B-1-e3
+INFO:root:Model NousResearch/Hermes-4-Qwen3-14B-1-e3 registered with status: loaded
+INFO:root:Batch processing worker task created.
+INFO:root:Batch processing worker starting. MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.1s
+INFO:root:Batch worker successfully retrieved model 'NousResearch/Hermes-4-Qwen3-14B-1-e3'.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:root:Registered with Atropos, UUID: 60660849563418121853183030528547399767
+INFO:root:Polling for batch... attempt 5
+INFO:root:Polling for batch... attempt 10
+INFO:root:Polling for batch... attempt 15
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Processing batch of 4 requests.
+INFO:root:Calling batch_generate_text_util with 7 expanded prompts.
+INFO:root:Using tokenizer's model_max_length: 131072
+WARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.
+INFO:root:Final effective_max_length for tokenizer: 65536
+INFO:root:Polling for batch... attempt 20
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Processing batch of 3 requests.
+INFO:root:Calling batch_generate_text_util with 6 expanded prompts.
+INFO:root:Using tokenizer's model_max_length: 131072
+WARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.
+INFO:root:Final effective_max_length for tokenizer: 65536
+INFO:root:Non-streaming chat completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.

@@ -122,3 +122,7 @@ export HF_TOKEN=your_token_here
 - Embeddings endpoint not implemented
 - No distributed operation
 - Streaming with n>1 not supported
+
+## Running Python scripts
+- Always use `uv run` to execute python scripts, models, tests
+- `uv` will automatically use the correct virtual environment

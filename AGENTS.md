@@ -46,3 +46,6 @@
 - Do not commit secrets; prefer environment variables or a local `.env` (loaded by uvicorn[standard]).
 - Large models: document expected RAM and quantization used.
 
+## Running Python scripts
+- Always use `uv run` to execute python scripts, models, tests
+- `uv` will automatically use the correct virtual environment

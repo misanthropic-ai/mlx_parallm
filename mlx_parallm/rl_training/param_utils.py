@@ -44,3 +44,12 @@ def zero_non_adapter_grads(model: nn.Module, grads: Any) -> Any:
                 out.append((k, g))  # Fallback to original gradient
     return tree_unflatten(out)
 
+
+def adapter_weights(model: nn.Module) -> Dict[str, mx.array]:
+    """Extract only adapter-related parameters by name.
+
+    Returns a flat dict suitable for save_weights.
+    """
+    params: Dict[str, mx.array] = dict(tree_flatten(model.parameters()))
+    names = adapter_param_names(model)
+    return {k: v for k, v in params.items() if k in names}

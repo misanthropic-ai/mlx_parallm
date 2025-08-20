@@ -1,0 +1,35 @@
+INFO:mlx_parallm.cli:Starting server with initial model: NousResearch/Hermes-4-Qwen3-14B-1-e3
+INFO:mlx_parallm.cli:Server will listen on 127.0.0.1:8000
+None of PyTorch, TensorFlow >= 2.0, or Flax have been found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+INFO:     Started server process [34656]
+INFO:     Waiting for application startup.
+INFO:root:Batch config: MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.08s, REQUEST_TIMEOUT_SECONDS=600.0
+INFO:root:Streaming concurrency limit: MAX_CONCURRENT_STREAMS=4
+INFO:root:Attempting to load initial model from CLI: NousResearch/Hermes-4-Qwen3-14B-1-e3
+INFO:root:Successfully loaded model: NousResearch/Hermes-4-Qwen3-14B-1-e3
+INFO:root:Model NousResearch/Hermes-4-Qwen3-14B-1-e3 registered with status: loaded
+INFO:root:Batch processing worker task created.
+INFO:root:Streaming batch worker task created.
+INFO:root:Batch processing worker starting. MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.08s
+INFO:root:Batch worker successfully retrieved model 'NousResearch/Hermes-4-Qwen3-14B-1-e3'.
+INFO:root:Streaming batch worker starting.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:55650 - "GET /health HTTP/1.1" 200 OK
+INFO:root:Inside create_completion for model NousResearch/Hermes-4-Qwen3-14B-1-e3. Parsed stream flag: False, type: <class 'bool'>
+INFO:root:Non-streaming completion request for model NousResearch/Hermes-4-Qwen3-14B-1-e3. It will be queued for batch processing.
+INFO:root:Processing batch of 1 requests.
+INFO:root:Calling batch_generate_text_util with 1 expanded prompts.
+INFO:root:Batch fill=12.5% (queue_depth=0)
+INFO:root:Using tokenizer's model_max_length: 131072
+WARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.
+INFO:root:Final effective_max_length for tokenizer: 65536
+INFO:root:Global prefix cache stored (len=1)
+INFO:     127.0.0.1:55651 - "POST /v1/completions HTTP/1.1" 200 OK
+INFO:root:Streaming request received for model NousResearch/Hermes-4-Qwen3-14B-1-e3. Stream flag: True
+INFO:     127.0.0.1:55652 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55653 - "GET /debug/metrics HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [34656]

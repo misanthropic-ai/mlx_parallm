@@ -1,0 +1,71 @@
+INFO:mlx_parallm.cli:Starting server with initial model: meta-llama/Llama-3.2-3B-Instruct-4bit
+INFO:mlx_parallm.cli:Server will listen on 127.0.0.1:8000
+None of PyTorch, TensorFlow >= 2.0, or Flax have been found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+INFO:     Started server process [30921]
+INFO:     Waiting for application startup.
+INFO:root:Batch config: MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.08s, REQUEST_TIMEOUT_SECONDS=600.0
+INFO:root:Streaming concurrency limit: MAX_CONCURRENT_STREAMS=4
+INFO:root:Attempting to load initial model from CLI: meta-llama/Llama-3.2-3B-Instruct-4bit
+ERROR:root:Failed to load model meta-llama/Llama-3.2-3B-Instruct-4bit: Cannot find an appropriate cached snapshot folder for the specified revision on the local disk and outgoing traffic has been disabled. To enable repo look-ups and downloads online, set 'HF_HUB_OFFLINE=0' as environment variable.
+Traceback (most recent call last):
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/huggingface_hub/_snapshot_download.py", line 155, in snapshot_download
+    repo_info = api.repo_info(repo_id=repo_id, repo_type=repo_type, revision=revision, token=token)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/huggingface_hub/utils/_validators.py", line 114, in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/huggingface_hub/hf_api.py", line 2816, in repo_info
+    return method(
+           ^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/huggingface_hub/utils/_validators.py", line 114, in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/huggingface_hub/hf_api.py", line 2600, in model_info
+    r = get_session().get(path, headers=headers, timeout=timeout, params=params)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/requests/sessions.py", line 602, in get
+    return self.request("GET", url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/huggingface_hub/utils/_http.py", line 107, in send
+    raise OfflineModeIsEnabled(
+huggingface_hub.errors.OfflineModeIsEnabled: Cannot reach https://huggingface.co/api/models/meta-llama/Llama-3.2-3B-Instruct-4bit/revision/main: offline mode is enabled. To disable it, please unset the `HF_HUB_OFFLINE` environment variable.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/server/main.py", line 129, in startup_event
+    model_instance, tokenizer_instance = load_model_and_tokenizer_util(
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 739, in load
+    model_path = get_model_path(path_or_hf_repo)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 86, in get_model_path
+    snapshot_download(
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/huggingface_hub/utils/_validators.py", line 114, in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/huggingface_hub/_snapshot_download.py", line 226, in snapshot_download
+    raise LocalEntryNotFoundError(
+huggingface_hub.errors.LocalEntryNotFoundError: Cannot find an appropriate cached snapshot folder for the specified revision on the local disk and outgoing traffic has been disabled. To enable repo look-ups and downloads online, set 'HF_HUB_OFFLINE=0' as environment variable.
+INFO:root:Model meta-llama/Llama-3.2-3B-Instruct-4bit registered with status: error_loading
+INFO:root:Batch processing worker task created.
+INFO:root:Streaming batch worker task created.
+INFO:root:Batch processing worker starting. MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.08s
+WARNING:root:Model 'meta-llama/Llama-3.2-3B-Instruct-4bit' not immediately available in registry for batch worker. Will retry.
+INFO:root:Streaming batch worker starting.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:55388 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55389 - "POST /v1/completions HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:55390 - "POST /v1/chat/completions HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:55391 - "GET /debug/metrics HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [30921]

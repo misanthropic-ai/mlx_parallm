@@ -1,0 +1,13 @@
+INFO:     127.0.0.1:56170 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56171 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56172 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56173 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56170 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56171 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56173 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56172 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56170 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56171 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56173 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56172 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:56170 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout

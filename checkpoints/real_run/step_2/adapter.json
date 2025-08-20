@@ -1,0 +1,6 @@
+{
+  "note": "no adapter params found",
+  "step": 2,
+  "model": "NousResearch/Hermes-4-Qwen3-14B-1-e3",
+  "lora": null
+}

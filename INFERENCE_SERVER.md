@@ -254,6 +254,181 @@ class CheckpointManager:
             weights = self.active_checkpoints[checkpoint_name]
             
         await model_manager.switch_lora(checkpoint_name)
+
+## High-Performance Inference Details
+
+This section documents the inference server internals that maximize throughput and concurrency on Apple Silicon: paged KV caching, continuous batching, co-batched streaming, tokenization caching, and metrics.
+
+### Paged KV Cache
+
+- Purpose: Allow each sequence in a batch to advance with its own KV offset, enabling continuous batching with mixed sequence lengths without re-allocating or copying per-step.
+- Implementation:
+  - `PagedKVCache` (in `mlx_parallm/models/base.py`) maintains per-sequence offsets (`offsets_list`) backed by a single buffer shaped `(B, n_kv_heads, T_cap, head_dim)`.
+  - Capacity grows in fixed “step” blocks (default 256 tokens) via `_ensure_capacity_for(max_needed)` to amortize allocations.
+  - `update_and_fetch(keys, values)` writes per-row ranges and returns a unified slice up to the current max end offset.
+  - `offsets` exposes a list of per-row offsets for attention/mask construction.
+  - `reset(batch_size)` preserves buffers when the batch size is unchanged; drops references on size change to reallocate cleanly.
+- KV Pool:
+  - `_KVPool` (in `utils.py`) reuses per-layer cache objects keyed by `(head_dim, kv_heads, batch_size)`, defaulting to `PagedKVCache` (paged=True).
+  - The generation path (`utils.py::generate_step`) pulls paged caches from the pool when `cache=None`.
+- Attention/masks:
+  - `create_additive_causal_mask_variable(B, N, offsets, total_length)` builds per-row additive causal masks using per-sequence offsets.
+  - Llama and Qwen adapters apply RoPE per row and use the variable-length mask to support heterogeneous sequence lengths.
+
+### Continuous Batching Scheduler
+
+- Mode: `--scheduler continuous` (default remains the “batch worker” + streaming worker).
+- Behavior:
+  - Admits both non-streaming and streaming requests into a single mixed batch.
+  - Runs a step-wise decode loop using `batch_stream_generate_text` and dispatches:
+    - Streaming deltas as SSE chunks to each request’s queue.
+    - Non-streaming completions aggregated and resolved when finished.
+  - At each step boundary it checks queues; if new work arrives, it breaks and rebuilds the batch, allowing rapid admission without mid-kernel preemption.
+  - Uses `PagedKVCache` under the hood for per-sequence offsets and efficient cache growth.
+- Fairness and latency:
+  - Mixed admission ensures streaming does not starve batch throughput and vice versa.
+  - Step-boundary admission is a safe midpoint with the current generation API and paged KV.
+
+### Co-Batched Streaming
+
+- Default-path streaming worker (when not in `continuous` mode) batches compatible chat requests to share decode steps.
+- Controls:
+  - `--max-concurrent-streams` limits parallel streams globally (protects batch throughput).
+  - Internally uses `STREAMING_SEMAPHORE` for admission of stream senders; continuous scheduler also respects it for streaming dispatch.
+
+### Tokenization & Template Caching
+
+- `encode_cached(tokenizer, text)`: LRU cache for single string encodes (reduces CPU when prompts repeat).
+- `apply_chat_template_cached(tokenizer, messages, add_generation_prompt=True)`: LRU cache for chat templating keyed by a minimalized message signature (role/content only) and tokenizer identity.
+
+### Metrics
+
+- Endpoint: `GET /debug/metrics`
+- Fields:
+  - `batches_processed`: Number of decode cycles processed (batch worker and continuous scheduler).
+  - `avg_batch_fill_pct`: Average batch utilization as a percentage of `--max-batch-size`.
+  - `batch_fill_hist`: 10-bucket histogram of batch fill (0–10, …, 90–100%).
+  - `queue_depth_last`: Last observed combined queue depth.
+  - `stream_batches_processed`: Count of co-batched streaming batches.
+  - `prompt_tps_last`, `prompt_tps_avg`: Prompt tokens/sec (time-to-first-yield window); avg is total tokens over total time so far.
+  - `decode_tps_last`, `decode_tps_avg`: Decode tokens/sec (active sequence tokens over wall time); avg is running.
+
+### CLI Usage & Configuration
+
+Run the server:
+- `mlx_parallm_serve --model-path <hf_id_or_path> --port 8000`
+- Add continuous scheduler: `--scheduler continuous`
+
+Key options (from `mlx_parallm/cli.py`):
+- `--model-path`: Required. Hugging Face ID or local path of the base model.
+- `--host`: Bind address (default `127.0.0.1`).
+- `--port`: Port (default `8000`).
+- `--lora-path`: Optional LoRA/DoRA adapter to load at startup.
+- `--max-batch-size`: Maximum batch size for dynamic/continuous batching (default 8).
+- `--batch-timeout`: Timed wait window to collect a batch (seconds; default 0.1).
+- `--request-timeout-seconds`: Per-request timeout (default 600.0).
+- `--max-concurrent-streams`: Limits simultaneous streams (default 4).
+- `--scheduler`: `default` or `continuous`.
+
+Recommended starting points for Apple Silicon (large memory machines):
+- Low-latency with concurrency: `--scheduler continuous --max-batch-size 8 --batch-timeout 0.05 --max-concurrent-streams 4`
+- Throughput-focused: increase `--max-batch-size` (e.g., 16) and slightly increase `--batch-timeout` to improve fill, then monitor `/debug/metrics` (batch_fill_hist, tokens/sec).
+
+### Quick Start Examples
+
+Prereqs
+- Create env and install editable: `uv venv && source .venv/bin/activate && uv pip install -e .`
+- Authenticate to Hugging Face if using private/gated repos: `huggingface-cli login` or set `HF_TOKEN`.
+
+Launch (Llama 3.2 3B Instruct 4-bit)
+- Start server (continuous scheduler):
+  - `mlx_parallm_serve --model-path mlx-community/Llama-3.2-3B-Instruct-4bit --scheduler continuous --host 127.0.0.1 --port 8000`
+- Health: `curl http://127.0.0.1:8000/health`
+- List models: `curl -s http://127.0.0.1:8000/v1/models`
+- Non-stream completion:
+  - `curl -s http://127.0.0.1:8000/v1/completions -H 'Content-Type: application/json' -d '{"model":"mlx-community/Llama-3.2-3B-Instruct-4bit","prompt":"Hello","max_tokens":16}'`
+- Chat completion (non-stream):
+  - `curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"mlx-community/Llama-3.2-3B-Instruct-4bit","messages":[{"role":"user","content":"Suggest 3 team names."}],"max_tokens":32}'`
+- Chat completion (streaming SSE):
+  - `curl -N -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"mlx-community/Llama-3.2-3B-Instruct-4bit","stream":true,"messages":[{"role":"user","content":"In one sentence, describe the ocean."}],"max_tokens":32}'`
+- Metrics: `curl -s http://127.0.0.1:8000/debug/metrics`
+
+Launch (Hermes-4 Qwen3)
+- `mlx_parallm_serve --model-path NousResearch/Hermes-4-Qwen3-14B-1-e3 --scheduler continuous --host 127.0.0.1 --port 8001`
+- Use the same curl patterns above, replacing the model and port.
+
+Tips
+- If port is busy: `lsof -ti :8000 -sTCP:LISTEN | xargs -r kill -9`
+- Keep quick tests short: use `max_tokens` 8–32 to sanity-check latency and metrics.
+
+### Operational Guidance
+
+- Health: `curl http://127.0.0.1:8000/health`
+- Quick completion: `curl -s http://127.0.0.1:8000/v1/completions -H 'Content-Type: application/json' -d '{"model":"<hf_id>","prompt":"Hello","max_tokens":16}'`
+- Streaming chat (SSE): POST to `/v1/chat/completions` with `{"stream": true}`.
+- Metrics-driven tuning: Watch `avg_batch_fill_pct`, `batch_fill_hist`, and `*_tps_*`; adjust `--batch-timeout`, `--max-batch-size`, and `--max-concurrent-streams` accordingly.
+
+### Notes & Next Steps
+
+- KV cache reuse across continuous batch rebuilds is planned to reduce admission overhead further.
+- Consider switching SSE serialization to `orjson` for lower CPU overhead.
+- Tokenization can be offloaded to a thread pool for heavier workloads.
+- Additional metrics (tokens/sec per phase, distribution/histograms) can be extended as needed.
+
+## Code Pointers
+
+- Paged KV and masks
+  - `mlx_parallm/models/base.py`:
+    - `PagedKVCache`: per-sequence paged cache implementation.
+    - `create_additive_causal_mask_variable`: per-row variable-length causal masks.
+  - `mlx_parallm/models/llama.py`, `mlx_parallm/models/qwen3.py`:
+    - Attention updates for per-row offsets and RoPE handling.
+
+- Generation paths and caches
+  - `mlx_parallm/utils.py`:
+    - `generate_step`: default to `PagedKVCache` via `_KVPool`.
+    - `_KVPool`: cache reuse; `_GlobalPrefixCache`: prefix KV LRU scaffold.
+    - `batch_stream_generate_text`: shared step loop for batch + streaming.
+    - `encode_cached`, `apply_chat_template_cached`: LRU tokenization/template caches.
+
+- Server and scheduling
+  - `mlx_parallm/server/main.py`:
+    - `continuous_scheduler_worker`: mixed admission, stepwise rebuild.
+    - `streaming_batch_worker`: co-batched streaming (default scheduler).
+    - `/debug/metrics`: telemetry endpoint fields listed above.
+    - Request queues: `REQUEST_QUEUE` (non-stream), `STREAM_CHAT_QUEUE` (stream), and `STREAMING_SEMAPHORE` guard.
+
+- CLI
+  - `mlx_parallm/cli.py`: server entrypoint and CLI flags including `--scheduler` and `--max-concurrent-streams`.
+
+## Troubleshooting
+
+- Pad token and left padding
+  - Batched generation requires left padding. Ensure the tokenizer has a pad token; if not, it falls back to EOS as pad: the server sets `tokenizer._tokenizer.padding_side = 'left'` and, when necessary, `pad_token = eos_token`.
+  - Symptom: shape/broadcast errors or garbled outputs during batching → verify pad token and left padding are in effect.
+
+- Model not found in registry (404 on requests)
+  - Ensure the server was launched with `--model-path <hf_id_or_path>` and that `/v1/models` lists the model.
+  - For private/gated Hugging Face repos, authenticate (`huggingface-cli login` or `HF_TOKEN`) before starting the server.
+
+- Streaming stalls or starvation
+  - If streaming responses throttle throughput, reduce `--max-concurrent-streams` (default 4) to protect batch progress.
+  - In `continuous` mode, both streaming and non-streaming share the step loop; batch size and batch timeout still affect latency.
+
+- Batch fill is low
+  - Increase `--batch-timeout` slightly (e.g., 0.05 → 0.1) and/or `--max-batch-size` to improve fill under load; confirm via `avg_batch_fill_pct` and `batch_fill_hist` in `/debug/metrics`.
+
+- High latency to first token
+  - Watch `prompt_tps_last` in `/debug/metrics`. If low, the model/prompt prefill phase may be underutilized; consider smaller batches for latency-sensitive traffic or separate pools.
+
+- Port conflicts / stale processes
+  - If the server fails to bind or health never returns, free the port (e.g., `lsof -ti :8000 | xargs -r kill -9`) and restart.
+
+- `n > 1` streaming not supported
+  - Streaming with `n > 1` is rejected; use non-streaming with `n` for multiple choices.
+
+- Memory pressure on large contexts
+  - While PagedKVCache reduces reallocation, very long contexts still grow per-layer KV. Consider sliding windows or max context limits to cap memory.
 ```
 
 ## Performance Optimizations for RL Training

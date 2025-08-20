@@ -1,0 +1,8 @@
+INFO:     127.0.0.1:60883 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:60884 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:60883 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:60884 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:60883 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:60884 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:60883 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:     127.0.0.1:60883 - "POST /v1/chat/completions HTTP/1.1" 200 OK

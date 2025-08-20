@@ -1,0 +1,92 @@
+INFO:mlx_parallm.cli:Starting server with initial model: mlx-community/Llama-3.2-3B-Instruct-4bit
+INFO:mlx_parallm.cli:Server will listen on 127.0.0.1:8000
+None of PyTorch, TensorFlow >= 2.0, or Flax have been found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+INFO:     Started server process [67791]
+INFO:     Waiting for application startup.
+INFO:root:Batch config: MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.08s, REQUEST_TIMEOUT_SECONDS=600.0
+INFO:root:Streaming concurrency limit: MAX_CONCURRENT_STREAMS=4
+INFO:root:Attempting to load initial model from CLI: mlx-community/Llama-3.2-3B-Instruct-4bit
+INFO:root:Successfully loaded model: mlx-community/Llama-3.2-3B-Instruct-4bit
+INFO:root:Model mlx-community/Llama-3.2-3B-Instruct-4bit registered with status: loaded
+INFO:root:Batch processing worker task created.
+INFO:root:Streaming batch worker task created.
+INFO:root:Batch processing worker starting. MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.08s
+INFO:root:Batch worker successfully retrieved model 'mlx-community/Llama-3.2-3B-Instruct-4bit'.
+INFO:root:Streaming batch worker starting.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:58126 - "GET /health HTTP/1.1" 200 OK
+INFO:root:Inside create_completion for model mlx-community/Llama-3.2-3B-Instruct-4bit. Parsed stream flag: False, type: <class 'bool'>
+INFO:root:Non-streaming completion request for model mlx-community/Llama-3.2-3B-Instruct-4bit. It will be queued for batch processing.
+INFO:root:Processing batch of 1 requests.
+INFO:root:Calling batch_generate_text_util with 1 expanded prompts.
+INFO:root:Batch fill=12.5% (queue_depth=0)
+WARNING:root:tokenizer._tokenizer.pad_token_id was None. Set to eos_token_id: 128009
+INFO:root:Using tokenizer's model_max_length: 131072
+WARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.
+INFO:root:Final effective_max_length for tokenizer: 65536
+ERROR:root:Error during batch generation or result distribution: name 'PagedKVCache' is not defined
+Traceback (most recent call last):
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/server/main.py", line 892, in batch_processing_worker
+    unique_results: List[Tuple[str, int, int]] = await batch_generate_text_util(
+                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 1328, in batch_generate_text
+    generation_results = await loop.run_in_executor(None, _synchronous_generation)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Caskroom/miniconda/base/lib/python3.11/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 1226, in _synchronous_generation
+    caches = _kv_pool.get(model.head_dim, kv_heads_list, batch_size, step=desired, paged=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 212, in get
+    klass = PagedKVCache if paged else BatchedKVCache
+            ^^^^^^^^^^^^
+NameError: name 'PagedKVCache' is not defined
+ERROR:root:Error processing request from queue for model mlx-community/Llama-3.2-3B-Instruct-4bit: name 'PagedKVCache' is not defined
+Traceback (most recent call last):
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/server/main.py", line 356, in create_completion
+    response_data = await asyncio.wait_for(queued_req.future, timeout=REQUEST_TIMEOUT_SECONDS)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Caskroom/miniconda/base/lib/python3.11/asyncio/tasks.py", line 479, in wait_for
+    return fut.result()
+           ^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/server/main.py", line 892, in batch_processing_worker
+    unique_results: List[Tuple[str, int, int]] = await batch_generate_text_util(
+                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 1328, in batch_generate_text
+    generation_results = await loop.run_in_executor(None, _synchronous_generation)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Caskroom/miniconda/base/lib/python3.11/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 1226, in _synchronous_generation
+    caches = _kv_pool.get(model.head_dim, kv_heads_list, batch_size, step=desired, paged=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 212, in get
+    klass = PagedKVCache if paged else BatchedKVCache
+            ^^^^^^^^^^^^
+NameError: name 'PagedKVCache' is not defined
+INFO:     127.0.0.1:58127 - "POST /v1/completions HTTP/1.1" 500 Internal Server Error
+INFO:root:Streaming request received for model mlx-community/Llama-3.2-3B-Instruct-4bit. Stream flag: True
+INFO:     127.0.0.1:58129 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:root:Streaming request received for model mlx-community/Llama-3.2-3B-Instruct-4bit. Stream flag: True
+INFO:     127.0.0.1:58128 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+ERROR:root:Error in streaming batch generation: name 'PagedKVCache' is not defined
+Traceback (most recent call last):
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/server/main.py", line 1122, in streaming_batch_worker
+    for step in batch_stream_generate_text(
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 1030, in batch_stream_generate_text
+    for (batch_next_token_ids, _), _ in zip(
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 392, in generate_step
+    cache = _kv_pool.get(head_dim, kv_heads, y.shape[0], paged=True)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/utils.py", line 212, in get
+    klass = PagedKVCache if paged else BatchedKVCache
+            ^^^^^^^^^^^^
+NameError: name 'PagedKVCache' is not defined
+INFO:     127.0.0.1:58130 - "GET /debug/metrics HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [67791]

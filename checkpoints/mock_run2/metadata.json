@@ -1,0 +1,9 @@
+{
+  "step": 2,
+  "created_at": "2025-08-20T04:00:42.218557Z",
+  "config": {
+    "model_path": "NousResearch/Hermes-4-Qwen3-14B-1-e3",
+    "lora_path": null
+  },
+  "adapter_path": null
+}

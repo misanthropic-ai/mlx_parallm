@@ -50,6 +50,19 @@ class BatchedKVCache:
         self.offset = 0
         self.step = 256
 
+    def reset(self, batch_size: int | None = None):
+        """Reset the cache for reuse.
+
+        If batch_size differs from the allocated tensors' batch dimension,
+        drop references to existing arrays so they will be reallocated on next use.
+        Otherwise, just reset the offset so the existing buffers can be reused.
+        """
+        if batch_size is not None and batch_size != self.batch_size:
+            self.batch_size = batch_size
+            self.keys = None
+            self.values = None
+        self.offset = 0
+
     def update_and_fetch(self, keys, values):
         prev = self.offset
         if self.keys is None or (prev + keys.shape[2]) > self.keys.shape[2]:
@@ -87,10 +100,6 @@ class PagedKVCache(BatchedKVCache):
     def __init__(self, head_dim, n_kv_heads, batch_size=1):
         super().__init__(head_dim, n_kv_heads, batch_size)
         self.offsets_list = [0] * batch_size
-
-    def reset(self, batch_size: int | None = None):
-        super().reset(batch_size)
-        self.offsets_list = [0] * self.batch_size
 
     def _ensure_capacity_for(self, needed_max: int):
         prev = self.keys.shape[2] if self.keys is not None else 0
@@ -135,17 +144,9 @@ class PagedKVCache(BatchedKVCache):
         return list(self.offsets_list)
 
     def reset(self, batch_size: int | None = None):
-        """Reset the cache for reuse.
-
-        If batch_size differs from the allocated tensors' batch dimension,
-        drop references to existing arrays so they will be reallocated on next use.
-        Otherwise, just reset the offset so the existing buffers can be reused.
-        """
-        if batch_size is not None and batch_size != self.batch_size:
-            self.batch_size = batch_size
-            self.keys = None
-            self.values = None
-        self.offset = 0
+        """Reset the cache and per-row offsets."""
+        super().reset(batch_size)
+        self.offsets_list = [0] * self.batch_size
 
 @dataclass
 class BaseModelArgs:

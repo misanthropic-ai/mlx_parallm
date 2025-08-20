@@ -98,28 +98,31 @@ class Attention(nn.Module):
         values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
 
         if cache is not None:
-            # Update cache with un-RoPE'd K/V then apply RoPE to queries/keys
-            keys, values = cache.update_and_fetch(keys, values)
-            # Apply RoPE to queries using previous offsets (per-row if available)
-            # queries: (B, n_heads, L, head_dim)
+            # Apply RoPE to queries and keys BEFORE caching
             try:
                 offsets = getattr(cache, "offsets", [getattr(cache, "offset", 0)])
             except Exception:
                 offsets = [getattr(cache, "offset", 0)]
+            
             if isinstance(offsets, list) and len(offsets) == queries.shape[0]:
                 # Per-row offsets: apply RoPE per sequence
                 B = queries.shape[0]
                 q_list = []
+                k_list = []
                 for b in range(B):
-                    q_b = self.rope(queries[b:b+1], offset=int(offsets[b]))
-                    q_list.append(q_b)
+                    off_b = int(offsets[b])
+                    q_list.append(self.rope(queries[b:b+1], offset=off_b))
+                    k_list.append(self.rope(keys[b:b+1], offset=off_b))
                 queries = mx.concatenate(q_list, axis=0)
+                keys = mx.concatenate(k_list, axis=0)
             else:
                 # Single offset for all
                 prev_offset = int(getattr(cache, "offset", 0))
                 queries = self.rope(queries, offset=prev_offset)
-            # Apply RoPE across the whole KV sequence per-row (position 0..S-1)
-            keys = self.rope(keys)
+                keys = self.rope(keys, offset=prev_offset)
+            
+            # Now update cache with RoPE'd keys and values
+            keys, values = cache.update_and_fetch(keys, values)
         else:
             queries = self.rope(queries)
             keys = self.rope(keys)

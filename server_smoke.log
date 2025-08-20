@@ -1,0 +1,28 @@
+INFO:__main__:Starting server with initial model: mlx-community/Llama-3.2-3B-Instruct-4bit
+INFO:__main__:Server will listen on 127.0.0.1:8000
+None of PyTorch, TensorFlow >= 2.0, or Flax have been found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+INFO:     Started server process [42312]
+INFO:     Waiting for application startup.
+INFO:root:Using model from environment: mlx-community/Llama-3.2-3B-Instruct-4bit
+INFO:root:Attempting to load initial model from CLI: mlx-community/Llama-3.2-3B-Instruct-4bit
+Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 25970.92it/s]
+INFO:root:Successfully loaded model: mlx-community/Llama-3.2-3B-Instruct-4bit
+INFO:root:Model mlx-community/Llama-3.2-3B-Instruct-4bit registered with status: loaded
+INFO:root:Continuous scheduler worker task created.
+INFO:root:Continuous scheduler starting.
+ERROR:root:No model_path provided for scheduler.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:61958 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61959 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:root:Inside create_completion for model mlx-community/Llama-3.2-3B-Instruct-4bit. Parsed stream flag: False, type: <class 'bool'>
+INFO:root:Non-streaming completion request for model mlx-community/Llama-3.2-3B-Instruct-4bit. It will be queued for batch processing.
+ERROR:root:Request timed out for model mlx-community/Llama-3.2-3B-Instruct-4bit after 60.0 seconds.
+INFO:     127.0.0.1:61960 - "POST /v1/completions HTTP/1.1" 504 Gateway Timeout
+INFO:root:Non-streaming chat completion request for model mlx-community/Llama-3.2-3B-Instruct-4bit. It will be queued for batch processing.
+ERROR:root:Chat request timed out for model mlx-community/Llama-3.2-3B-Instruct-4bit after 60.0 seconds.
+INFO:     127.0.0.1:62090 - "POST /v1/chat/completions HTTP/1.1" 504 Gateway Timeout
+INFO:root:Streaming request received for model mlx-community/Llama-3.2-3B-Instruct-4bit. Stream flag: True
+INFO:     127.0.0.1:62147 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.11/multiprocessing/resource_tracker.py:224: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

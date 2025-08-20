@@ -41,13 +41,29 @@ class AtroposClient:
             raise RuntimeError("Atropos register did not return uuid")
         return self._uuid
 
-    async def fetch_batch_async(self, batch_size: int, token_budget: int, require_same_env: bool = False) -> List[ScoredDataGroup]:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{self.api_url}/batch", timeout=60) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
+    async def fetch_batch_async(self, batch_size: int, token_budget: int, require_same_env: bool = False, poll: bool = True) -> List[ScoredDataGroup]:
+        """Fetch a batch from Atropos. If poll=True, keep trying until we get data."""
+        import logging
+        poll_count = 0
+        while True:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.api_url}/batch", timeout=60) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+            
+            batch = data.get("batch")
+            if batch is not None or not poll:
+                if poll_count > 0:
+                    logging.info(f"Got batch after {poll_count} poll attempts")
+                break
+            
+            poll_count += 1
+            if poll_count % 5 == 0:
+                logging.info(f"Polling for batch... attempt {poll_count}")
+            
+            # Wait a bit before polling again
+            await asyncio.sleep(1.0)
         
-        batch = data.get("batch")
         if batch is None:
             return []
         
@@ -80,8 +96,8 @@ class AtroposClient:
     def register(self, info: Dict) -> str:
         return asyncio.get_event_loop().run_until_complete(self.register_async(info))
 
-    def fetch_batch(self, batch_size: int, token_budget: int, require_same_env: bool = False) -> List[ScoredDataGroup]:
-        return asyncio.get_event_loop().run_until_complete(self.fetch_batch_async(batch_size, token_budget, require_same_env))
+    def fetch_batch(self, batch_size: int, token_budget: int, require_same_env: bool = False, poll: bool = True) -> List[ScoredDataGroup]:
+        return asyncio.get_event_loop().run_until_complete(self.fetch_batch_async(batch_size, token_budget, require_same_env, poll))
 
 
 class MockAtroposClient:

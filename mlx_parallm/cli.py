@@ -27,6 +27,7 @@ class ServerCLIArgs(Cmd):
     batch_timeout: float = Field(0.1, description="Batching window in seconds.", cli=["--batch-timeout"])
     request_timeout_seconds: float = Field(600.0, description="Per-request processing timeout (seconds).", cli=["--request-timeout-seconds"])
     max_concurrent_streams: int = Field(4, description="Limit for concurrent streaming responses to protect batch throughput.", cli=["--max-concurrent-streams"])
+    scheduler: str = Field("default", description="Scheduler mode: 'default' or 'continuous' (admit-on-step).", cli=["--scheduler"])
     # We'll add more arguments like workers, log_level, config_file later
     # Log level for Uvicorn can be set directly in uvicorn.run
 

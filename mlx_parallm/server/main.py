@@ -31,15 +31,14 @@ import numpy as np
 import math
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_parallm.utils import apply_chat_template_cached
-from mlx_parallm.cli import current_server_args # For accessing CLI args like model_path
-
-# Attempt to import server arguments from cli.py
-# This is a simple way to pass CLI args; will be refined with a proper config system.
+# Access CLI args dynamically to avoid import-time binding issues
 try:
-    from mlx_parallm.cli import current_server_args
-except ImportError:
-    current_server_args = None # type: ignore
-    logging.warning("Could not import current_server_args from mlx_parallm.cli. Server might not have model path if not run via CLI.")
+    import mlx_parallm.cli as _cli_mod
+except Exception:
+    _cli_mod = None  # type: ignore
+    logging.warning(
+        "Could not import mlx_parallm.cli. If not run via CLI, provide model via API."
+    )
 
 app = FastAPI(
     title="mlx_parallm Server",
@@ -56,6 +55,15 @@ METRICS: Dict[str, Any] = {
     "batch_fill_samples": 0,
     "queue_depth_last": 0,
     "stream_batches_processed": 0,
+    # Telemetry: tokens/sec and histogram
+    "prompt_tokens_total": 0,
+    "prompt_time_total": 0.0,
+    "prompt_tps_last": 0.0,
+    "decode_tokens_total": 0,
+    "decode_time_total": 0.0,
+    "decode_tps_last": 0.0,
+    # 10 buckets for batch fill %: 0-10, 10-20, ..., 90-100
+    "batch_fill_hist": [0] * 10,
 }
 
 # Request Queue and Batching Configuration
@@ -71,6 +79,7 @@ STREAMING_SEMAPHORE: asyncio.Semaphore = asyncio.Semaphore(MAX_CONCURRENT_STREAM
 # Queue for co-batched streaming (chat)
 STREAM_CHAT_QUEUE: asyncio.Queue = asyncio.Queue()
 STREAM_BATCH_TIMEOUT = 0.02
+SCHEDULER_MODE = "default"
 
 class StreamQueuedChat:
     def __init__(self, request: ChatCompletionRequest):
@@ -96,30 +105,56 @@ async def startup_event():
     """
     # Apply batching/timeouts from CLI if provided
     global MAX_BATCH_SIZE, BATCH_TIMEOUT, REQUEST_TIMEOUT_SECONDS, STREAMING_SEMAPHORE, MAX_CONCURRENT_STREAMS
+    # Fetch CLI args dynamically from module to avoid stale binding
+    args = getattr(_cli_mod, "current_server_args", None) if _cli_mod else None
     try:
-        if current_server_args is not None:
-            MAX_BATCH_SIZE = int(getattr(current_server_args, "max_batch_size", MAX_BATCH_SIZE))
-            BATCH_TIMEOUT = float(getattr(current_server_args, "batch_timeout", BATCH_TIMEOUT))
-            REQUEST_TIMEOUT_SECONDS = float(getattr(current_server_args, "request_timeout_seconds", REQUEST_TIMEOUT_SECONDS))
+        if args is not None:
+            MAX_BATCH_SIZE = int(getattr(args, "max_batch_size", MAX_BATCH_SIZE))
+            BATCH_TIMEOUT = float(getattr(args, "batch_timeout", BATCH_TIMEOUT))
+            REQUEST_TIMEOUT_SECONDS = float(getattr(args, "request_timeout_seconds", REQUEST_TIMEOUT_SECONDS))
             # Optional arg in future; keep default otherwise
-            max_streams = int(getattr(current_server_args, "max_concurrent_streams", MAX_CONCURRENT_STREAMS))
+            max_streams = int(getattr(args, "max_concurrent_streams", MAX_CONCURRENT_STREAMS))
             MAX_CONCURRENT_STREAMS = max_streams
             STREAMING_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_STREAMS)
+            global SCHEDULER_MODE
+            SCHEDULER_MODE = getattr(args, "scheduler", "default")
             logging.info(f"Batch config: MAX_BATCH_SIZE={MAX_BATCH_SIZE}, BATCH_TIMEOUT={BATCH_TIMEOUT}s, REQUEST_TIMEOUT_SECONDS={REQUEST_TIMEOUT_SECONDS}")
             logging.info(f"Streaming concurrency limit: MAX_CONCURRENT_STREAMS={MAX_CONCURRENT_STREAMS}")
+            logging.info(f"Scheduler mode: {SCHEDULER_MODE}")
     except Exception as e:
         logging.warning(f"Failed to apply CLI batching/timeouts: {e}")
 
-    if current_server_args and current_server_args.model_path:
-        model_id_cli = current_server_args.model_path # Use path as ID for now
+    # Determine initial model from CLI or environment
+    env_model = os.getenv("MLX_PARALLM_MODEL") or os.getenv("MODEL_PATH") or os.getenv("MODEL")
+    if not args and env_model:
+        logging.info(f"Using model from environment: {env_model}")
+        # Minimal env-based scheduler overrides
+        try:
+            mb = os.getenv("MAX_BATCH_SIZE"); bt = os.getenv("BATCH_TIMEOUT"); rts = os.getenv("REQUEST_TIMEOUT_SECONDS"); mcs = os.getenv("MAX_CONCURRENT_STREAMS"); sched = os.getenv("SCHEDULER") or os.getenv("MLX_PARALLM_SCHEDULER")
+            if mb: 
+                MAX_BATCH_SIZE = int(mb)
+            if bt:
+                BATCH_TIMEOUT = float(bt)
+            if rts:
+                REQUEST_TIMEOUT_SECONDS = float(rts)
+            if mcs:
+                MAX_CONCURRENT_STREAMS = int(mcs); STREAMING_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_STREAMS)
+            if sched:
+                SCHEDULER_MODE = str(sched)
+        except Exception as e:
+            logging.warning(f"Failed to apply env config: {e}")
+
+    model_source = (args.model_path if (args and getattr(args, 'model_path', None)) else env_model)
+    if model_source:
+        model_id_cli = model_source # Use path as ID for now
         logging.info(f"Attempting to load initial model from CLI: {model_id_cli}")
         
         record = InternalModelRecord(
             id=model_id_cli,
-            path_or_hf_id=current_server_args.model_path,
+            path_or_hf_id=model_source,
             status=ModelStatus.LOADING,
             model_type="causal_lm",
-            adapter_path=getattr(current_server_args, "lora_path", None),
+            adapter_path=(getattr(args, "lora_path", None) if args else None),
         )
         model_registry[model_id_cli] = record
 
@@ -127,19 +162,19 @@ async def startup_event():
             # Actual model loading
             # Load base model and optionally apply LoRA/DoRA adapter if provided
             model_instance, tokenizer_instance = load_model_and_tokenizer_util(
-                current_server_args.model_path,
-                adapter_path=getattr(current_server_args, "lora_path", None),
+                model_source,
+                adapter_path=(getattr(args, "lora_path", None) if args else None),
             )
             
             # Update the record in the registry
             record.model_instance = model_instance
             record.tokenizer_instance = tokenizer_instance
             record.status = ModelStatus.LOADED
-            record.adapter_path = getattr(current_server_args, "lora_path", None)
+            record.adapter_path = (getattr(args, "lora_path", None) if args else None)
             # model_type might be refined here if load_model_from_util provides more info
-            if getattr(current_server_args, "lora_path", None):
+            if args and getattr(args, "lora_path", None):
                 logging.info(
-                    f"Successfully loaded model: {model_id_cli} with adapter: {current_server_args.lora_path}"
+                    f"Successfully loaded model: {model_id_cli} with adapter: {args.lora_path}"
                 )
             else:
                 logging.info(f"Successfully loaded model: {model_id_cli}")
@@ -151,12 +186,15 @@ async def startup_event():
     else:
         logging.warning("No initial model path found in server arguments. Model registry will be empty at startup.")
 
-    # Start the batch processing worker
-    asyncio.create_task(batch_processing_worker())
-    logging.info("Batch processing worker task created.")
-    # Start streaming batch worker
-    asyncio.create_task(streaming_batch_worker())
-    logging.info("Streaming batch worker task created.")
+    # Start workers based on scheduler mode
+    if SCHEDULER_MODE == "continuous":
+        asyncio.create_task(continuous_scheduler_worker())
+        logging.info("Continuous scheduler worker task created.")
+    else:
+        asyncio.create_task(batch_processing_worker())
+        logging.info("Batch processing worker task created.")
+        asyncio.create_task(streaming_batch_worker())
+        logging.info("Streaming batch worker task created.")
 
 @app.get("/health", tags=["General"])
 async def health_check():
@@ -174,11 +212,31 @@ async def debug_metrics():
         )
     except Exception:
         avg_fill = 0.0
+    # Compute running average TPS where possible
+    try:
+        prompt_tps_avg = (
+            (METRICS["prompt_tokens_total"] / METRICS["prompt_time_total"]) if METRICS["prompt_time_total"] > 1e-9 else 0.0
+        )
+    except Exception:
+        prompt_tps_avg = 0.0
+    try:
+        decode_tps_avg = (
+            (METRICS["decode_tokens_total"] / METRICS["decode_time_total"]) if METRICS["decode_time_total"] > 1e-9 else 0.0
+        )
+    except Exception:
+        decode_tps_avg = 0.0
     return {
         "batches_processed": METRICS.get("batches_processed", 0),
         "avg_batch_fill_pct": avg_fill,
+        "batch_fill_hist": METRICS.get("batch_fill_hist", []),
         "queue_depth_last": METRICS.get("queue_depth_last", 0),
         "stream_batches_processed": METRICS.get("stream_batches_processed", 0),
+        "prompt_tps_avg": prompt_tps_avg,
+        "prompt_tps_last": METRICS.get("prompt_tps_last", 0.0),
+        "decode_tps_avg": decode_tps_avg,
+        "decode_tps_last": METRICS.get("decode_tps_last", 0.0),
+        "prompt_tokens_total": METRICS.get("prompt_tokens_total", 0),
+        "decode_tokens_total": METRICS.get("decode_tokens_total", 0),
     }
 
 @app.get("/debug/metrics", tags=["Debug"])
@@ -189,11 +247,31 @@ async def debug_metrics():
         )
     except Exception:
         avg_fill = 0.0
+    # Compute running average TPS where possible
+    try:
+        prompt_tps_avg = (
+            (METRICS["prompt_tokens_total"] / METRICS["prompt_time_total"]) if METRICS["prompt_time_total"] > 1e-9 else 0.0
+        )
+    except Exception:
+        prompt_tps_avg = 0.0
+    try:
+        decode_tps_avg = (
+            (METRICS["decode_tokens_total"] / METRICS["decode_time_total"]) if METRICS["decode_time_total"] > 1e-9 else 0.0
+        )
+    except Exception:
+        decode_tps_avg = 0.0
     return {
         "batches_processed": METRICS.get("batches_processed", 0),
         "avg_batch_fill_pct": avg_fill,
+        "batch_fill_hist": METRICS.get("batch_fill_hist", []),
         "queue_depth_last": METRICS.get("queue_depth_last", 0),
         "stream_batches_processed": METRICS.get("stream_batches_processed", 0),
+        "prompt_tps_avg": prompt_tps_avg,
+        "prompt_tps_last": METRICS.get("prompt_tps_last", 0.0),
+        "decode_tps_avg": decode_tps_avg,
+        "decode_tps_last": METRICS.get("decode_tps_last", 0.0),
+        "prompt_tokens_total": METRICS.get("prompt_tokens_total", 0),
+        "decode_tokens_total": METRICS.get("decode_tokens_total", 0),
     }
 
 @app.get("/v1/models", response_model=ModelList, tags=["Models"])
@@ -671,10 +749,12 @@ async def batch_processing_worker():
     # It will fetch the model details once it starts its processing loop or if the model_id changes.
     model = None
     tokenizer = None
-    model_id_from_args = current_server_args.model_path # Get the configured model path
+    # Dynamic fetch of CLI args to avoid stale reference
+    _args = getattr(_cli_mod, "current_server_args", None) if '_cli_mod' in globals() else None
+    model_id_from_args = _args.model_path if (_args and getattr(_args, 'model_path', None)) else None # Get the configured model path
 
     # Try to get model/tokenizer initially. If not available, will try again in loop.
-    model_record_initial = model_registry.get(model_id_from_args)
+    model_record_initial = model_registry.get(model_id_from_args) if model_id_from_args else None
     if model_record_initial and model_record_initial.model_instance and model_record_initial.tokenizer_instance:
         model = model_record_initial.model_instance
         tokenizer = model_record_initial.tokenizer_instance
@@ -685,7 +765,7 @@ async def batch_processing_worker():
 
     while True:
         if not model or not tokenizer: # Periodically check if model got loaded
-            model_record_check = model_registry.get(model_id_from_args)
+            model_record_check = model_registry.get(model_id_from_args) if model_id_from_args else None
             if model_record_check and model_record_check.model_instance and model_record_check.tokenizer_instance:
                 model = model_record_check.model_instance
                 tokenizer = model_record_check.tokenizer_instance
@@ -875,6 +955,8 @@ async def batch_processing_worker():
                     METRICS["batch_fill_acc"] += fill_pct
                     METRICS["batch_fill_samples"] += 1
                     METRICS["queue_depth_last"] = int(q_depth)
+                    bin_idx = int(min(9, max(0, fill_pct // 10)))
+                    METRICS["batch_fill_hist"][int(bin_idx)] += 1
                 except Exception:
                     pass
                 # De-duplicate identical prompts within this batch to avoid redundant compute
@@ -1162,4 +1244,278 @@ async def streaming_batch_worker():
 
         except Exception as outer:
             logging.error(f"Streaming batch worker outer error: {outer}", exc_info=True)
+            await asyncio.sleep(0.05)
+
+
+async def continuous_scheduler_worker():
+    """Unified admit-on-step scheduler for streaming and non-streaming.
+
+    This initial version admits at step boundaries: it batches all current
+    queued requests, runs a step-wise decode loop, and between steps checks
+    queues to admit additional sequences by restarting the step loop with
+    the expanded batch.
+    """
+    global model_registry
+    logging.info("Continuous scheduler starting.")
+    # Determine model
+    _args = getattr(_cli_mod, "current_server_args", None) if '_cli_mod' in globals() else None
+    model_id = getattr(_args, "model_path", None)
+    if not model_id:
+        logging.error("No model_path provided for scheduler.")
+        return
+    while True:
+        rec = model_registry.get(model_id)
+        if rec and rec.status == ModelStatus.LOADED and rec.model_instance and rec.tokenizer_instance:
+            break
+        logging.info("Scheduler waiting for model to load...")
+        await asyncio.sleep(0.5)
+
+    model = rec.model_instance
+    tokenizer = rec.tokenizer_instance
+    if not isinstance(tokenizer, TokenizerWrapper):
+        tokenizer = TokenizerWrapper(tokenizer)
+
+    # Main scheduling loop
+    while True:
+        try:
+            # Gather a batch from both queues
+            batch_queued: List[Union[QueuedRequest, StreamQueuedChat]] = []
+            start_t = asyncio.get_event_loop().time()
+            # Try to prime with one request from either queue
+            try:
+                # Prefer request queue if available
+                if REQUEST_QUEUE.qsize() > 0:
+                    item = await asyncio.wait_for(REQUEST_QUEUE.get(), timeout=BATCH_TIMEOUT)
+                    batch_queued.append(item)
+                    REQUEST_QUEUE.task_done()
+                elif STREAM_CHAT_QUEUE.qsize() > 0:
+                    item = await asyncio.wait_for(STREAM_CHAT_QUEUE.get(), timeout=BATCH_TIMEOUT)
+                    batch_queued.append(item)
+                else:
+                    # Wait on either
+                    item = await asyncio.wait_for(REQUEST_QUEUE.get(), timeout=BATCH_TIMEOUT)
+                    batch_queued.append(item)
+                    REQUEST_QUEUE.task_done()
+            except asyncio.TimeoutError:
+                continue
+
+            # Fill within timeout window
+            while len(batch_queued) < MAX_BATCH_SIZE:
+                remaining = BATCH_TIMEOUT - (asyncio.get_event_loop().time() - start_t)
+                if remaining <= 0:
+                    break
+                # Drain both queues opportunistically
+                took = False
+                try:
+                    item = REQUEST_QUEUE.get_nowait()
+                    batch_queued.append(item)
+                    REQUEST_QUEUE.task_done()
+                    took = True
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    item2 = STREAM_CHAT_QUEUE.get_nowait()
+                    batch_queued.append(item2)
+                    took = True
+                except asyncio.QueueEmpty:
+                    pass
+                if not took:
+                    # Await next arrival up to remaining
+                    try:
+                        item = await asyncio.wait_for(REQUEST_QUEUE.get(), timeout=remaining)
+                        batch_queued.append(item)
+                        REQUEST_QUEUE.task_done()
+                    except asyncio.TimeoutError:
+                        break
+
+            if not batch_queued:
+                continue
+
+            # Build prompts (mixed batch of completion and chat streaming)
+            prompts_text: List[str] = []
+            idx_map: List[Tuple[str, Any]] = []  # ('completion'|'stream', original obj)
+            for item in batch_queued:
+                if isinstance(item, QueuedRequest):
+                    rd = item.request_data
+                    if isinstance(rd, CompletionRequest):
+                        prompts_text.append(rd.prompt)
+                        idx_map.append(("completion", item))
+                    elif isinstance(rd, ChatCompletionRequest):
+                        msgs = [m.model_dump(exclude_none=True) for m in rd.messages]
+                        text = apply_chat_template_cached(tokenizer, msgs, add_generation_prompt=True)
+                        prompts_text.append(text)
+                        idx_map.append(("completion", item))
+                else:
+                    # StreamQueuedChat
+                    msgs = [m.model_dump(exclude_none=True) for m in item.request.messages]
+                    text = apply_chat_template_cached(tokenizer, msgs, add_generation_prompt=True)
+                    prompts_text.append(text)
+                    idx_map.append(("stream", item))
+
+            # Tokenize with left padding
+            if tokenizer._tokenizer.pad_token is None:
+                tokenizer._tokenizer.pad_token = tokenizer.eos_token
+            tokenizer._tokenizer.padding_side = 'left'
+            enc = tokenizer._tokenizer(prompts_text, return_tensors="np", padding=True)
+            prompts_mx = mx.array(enc["input_ids"])  # (B, T)
+            # Metrics: batch fill histogram and queue depth
+            try:
+                qd = (REQUEST_QUEUE.qsize() if hasattr(REQUEST_QUEUE, "qsize") else 0) + (
+                    STREAM_CHAT_QUEUE.qsize() if hasattr(STREAM_CHAT_QUEUE, "qsize") else 0
+                )
+                METRICS["queue_depth_last"] = int(qd)
+                if MAX_BATCH_SIZE > 0:
+                    fill_pct = (len(prompts_text) / MAX_BATCH_SIZE) * 100.0
+                    METRICS["batches_processed"] += 1
+                    METRICS["batch_fill_acc"] += fill_pct
+                    METRICS["batch_fill_samples"] += 1
+                    bin_idx = int(min(9, max(0, fill_pct // 10)))
+                    METRICS["batch_fill_hist"][int(bin_idx)] += 1
+            except Exception:
+                pass
+
+            # Consolidated params
+            # Take from first request if available
+            temperature = 0.7
+            top_p = 1.0
+            max_tokens = 64
+            first = batch_queued[0]
+            if isinstance(first, QueuedRequest):
+                rd = first.request_data
+                if isinstance(rd, CompletionRequest) or isinstance(rd, ChatCompletionRequest):
+                    if rd.temperature is not None:
+                        temperature = rd.temperature
+                    if rd.top_p is not None:
+                        top_p = rd.top_p
+                    if getattr(rd, 'max_tokens', None) is not None:
+                        max_tokens = int(rd.max_tokens)  # type: ignore
+            elif isinstance(first, StreamQueuedChat):
+                r = first.request
+                temperature = r.temperature if r.temperature is not None else 0.7
+                top_p = r.top_p if r.top_p is not None else 1.0
+                max_tokens = r.max_tokens or 64
+
+            # Stepwise generation; between steps, check for new admissions
+            # For simplicity, rebuild the generator if we admit new sequences
+            admitted_new = False
+            accum_texts: List[str] = [""] * len(idx_map)
+            finished: List[bool] = [False] * len(idx_map)
+            # Metrics: prompt/decode TPS
+            # Count total prompt tokens from attention mask if available, else from non-pad tokens
+            total_prompt_tokens = 0
+            try:
+                if "attention_mask" in enc:
+                    total_prompt_tokens = int(np.sum(enc["attention_mask"]))
+                else:
+                    pad_id = tokenizer._tokenizer.pad_token_id
+                    arr = np.array(enc["input_ids"])  # type: ignore
+                    if pad_id is None:
+                        total_prompt_tokens = int(arr.size)
+                    else:
+                        total_prompt_tokens = int((arr != pad_id).sum())
+            except Exception:
+                total_prompt_tokens = 0
+            t0 = time.perf_counter()
+            first_step = True
+            decode_tokens_accum = 0
+            decode_t_start = None
+            for step in batch_stream_generate_text(
+                model,
+                tokenizer,
+                prompts_mx,
+                max_tokens,
+                temp=temperature,
+                top_p=top_p,
+            ):
+                # On first yield, record prompt time and update metrics
+                if first_step:
+                    try:
+                        prompt_time = max(1e-9, time.perf_counter() - t0)
+                        METRICS["prompt_tokens_total"] += int(total_prompt_tokens)
+                        METRICS["prompt_time_total"] += float(prompt_time)
+                        METRICS["prompt_tps_last"] = (
+                            (int(total_prompt_tokens) / float(prompt_time)) if total_prompt_tokens > 0 else 0.0
+                        )
+                    except Exception:
+                        pass
+                    decode_t_start = time.perf_counter()
+                    first_step = False
+
+                # Decode tokens/sec accumulation: count active sequences before processing this step
+                try:
+                    active_before = sum(1 for f in finished if not f)
+                    decode_tokens_accum += int(active_before)
+                except Exception:
+                    pass
+                # Dispatch step deltas
+                for i, (delta_text, finish_reason) in enumerate(step):
+                    if finished[i]:
+                        continue
+                    kind, obj = idx_map[i]
+                    if kind == "stream":
+                        # SSE chunk
+                        choice_delta = DeltaMessage()
+                        if delta_text is not None:
+                            choice_delta.content = delta_text
+                        stream_choice = ChatCompletionStreamChoice(index=0, delta=choice_delta, finish_reason=finish_reason)
+                        chunk = ChatCompletionChunk(id=obj.id, model=model_id, choices=[stream_choice])
+                        await obj.queue.put(f"data: {chunk.model_dump_json()}\n\n")
+                        if finish_reason:
+                            await obj.queue.put("__DONE__")
+                            finished[i] = True
+                    else:
+                        if delta_text is not None:
+                            accum_texts[i] += delta_text
+                        if finish_reason:
+                            finished[i] = True
+
+                # Admission check
+                if REQUEST_QUEUE.qsize() > 0 or STREAM_CHAT_QUEUE.qsize() > 0:
+                    admitted_new = True
+                    # Update decode TPS for this segment before rebuilding
+                    try:
+                        if decode_t_start is not None:
+                            dt = max(1e-9, time.perf_counter() - decode_t_start)
+                            METRICS["decode_tokens_total"] += int(decode_tokens_accum)
+                            METRICS["decode_time_total"] += float(dt)
+                            METRICS["decode_tps_last"] = (
+                                (int(decode_tokens_accum) / float(dt)) if decode_tokens_accum > 0 else 0.0
+                            )
+                    except Exception:
+                        pass
+                    break
+
+            # Resolve non-streaming completions
+            current_time = int(time.time())
+            for i, (kind, obj) in enumerate(idx_map):
+                if kind == "completion":
+                    if not isinstance(obj, QueuedRequest):
+                        continue
+                    rd = obj.request_data
+                    model_name_for_response = model_id
+                    usage = CompletionUsage(prompt_tokens=int(enc["input_ids"][i].shape[0]), completion_tokens=len(accum_texts[i].split()), total_tokens=0)  # rough estimate
+                    if isinstance(rd, CompletionRequest):
+                        choice = CompletionChoice(text=accum_texts[i], index=0, finish_reason="stop")
+                        resp = CompletionResponse(id=f"cmpl-{uuid.uuid4().hex[:29]}", object="text_completion", created=current_time, model=model_name_for_response, choices=[choice], usage=usage)
+                    else:
+                        msg = ChatMessage(role="assistant", content=accum_texts[i].strip())
+                        ch = ChatCompletionChoice(index=0, message=msg, finish_reason="stop")
+                        resp = ChatCompletionResponse(id=f"chatcmpl-{uuid.uuid4().hex[:28]}", object="chat.completion", created=current_time, model=model_name_for_response, choices=[ch], usage=usage)
+                    if not obj.future.done():
+                        obj.future.set_result(resp)
+
+            # If we admitted new, loop continues to rebuild batch including new ones
+            # If we consumed to exhaustion without admit, finalize decode TPS segment
+            try:
+                if not admitted_new and decode_t_start is not None:
+                    dt = max(1e-9, time.perf_counter() - decode_t_start)
+                    METRICS["decode_tokens_total"] += int(decode_tokens_accum)
+                    METRICS["decode_time_total"] += float(dt)
+                    METRICS["decode_tps_last"] = (
+                        (int(decode_tokens_accum) / float(dt)) if decode_tokens_accum > 0 else 0.0
+                    )
+            except Exception:
+                pass
+        except Exception as e:
+            logging.error(f"Continuous scheduler error: {e}", exc_info=True)
             await asyncio.sleep(0.05)

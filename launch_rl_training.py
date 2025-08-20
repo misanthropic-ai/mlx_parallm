@@ -206,6 +206,7 @@ Examples:
     
     # Other options
     parser.add_argument("--log-dir", help="Directory for log files")
+    parser.add_argument("--checkpoint-dir", default="checkpoints", help="Directory for adapter checkpoints")
     parser.add_argument("--no-cleanup", action="store_true",
                        help="Don't clean up processes on exit")
     
@@ -267,7 +268,9 @@ Examples:
             "--model-path", args.model,
             "--steps", str(args.steps),
             "--batch-size", str(args.batch_size),
-            "--port", str(args.inference_port)
+            "--port", str(args.inference_port),
+            "--checkpoint-dir", args.checkpoint_dir,
+            "--checkpoint-interval", "1",
         ]
         
         if args.lora_path:
