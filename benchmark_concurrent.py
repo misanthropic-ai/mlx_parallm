@@ -35,7 +35,7 @@ async def send_request(
     """Send a single request and measure timing."""
     
     payload = {
-        "model": "NousResearch/Hermes-4-Qwen3-14B-1-e3",  # Will be overridden by args
+        "model": "models/hermes-qwen3-14b-4bit",  # 4-bit quantized model
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": temperature,

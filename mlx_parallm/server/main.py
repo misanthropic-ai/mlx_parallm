@@ -998,7 +998,8 @@ async def batch_processing_worker():
                     continue # Move to next batch cycle
 
                 current_time = int(time.time())
-                model_name_for_response = current_server_args.model_path or "unknown_model"
+                _args = getattr(_cli_mod, "current_server_args", None) if _cli_mod else None
+                model_name_for_response = _args.model_path if _args else "unknown_model"
 
                 # Group choices and usage data by original QueuedRequest future
                 # Key: Future, Value: Dict containing list of choices, token counts, original request data
