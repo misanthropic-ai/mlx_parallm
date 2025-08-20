@@ -99,6 +99,15 @@ class Attention(nn.Module):
             queries = self.rope(queries)
             keys = self.rope(keys)
         
+        # Ensure mask shape broadcasts with (B, n_heads, L_q, L_kv)
+        if mask is not None:
+            if mask.ndim == 2:
+                # (L_q, L_kv) -> (1, 1, L_q, L_kv)
+                mask = mx.expand_dims(mx.expand_dims(mask, 0), 0)
+            elif mask.ndim == 3:
+                # (B, L_q, L_kv) -> (B, 1, L_q, L_kv)
+                mask = mx.expand_dims(mask, 1)
+        
         output = mx.fast.scaled_dot_product_attention(
             queries, keys, values, scale=self.scale, mask=mask
         )
