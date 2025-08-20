@@ -27,7 +27,7 @@ from mlx_lm.tuner.utils import dequantize as dequantize_model
 
 # Local imports
 from mlx_parallm.sample_utils import top_p_sampling
-from mlx_parallm.models.base import BatchedKVCache
+from mlx_parallm.models.base import BatchedKVCache, PagedKVCache
 
 # Constants
 MODEL_REMAPPING = {
@@ -205,11 +205,12 @@ class _KVPool:
     def __init__(self):
         self._pool: Dict[Tuple[int, Tuple[int, ...], int], List[BatchedKVCache]] = {}
 
-    def get(self, head_dim: int, kv_heads: List[int], batch_size: int, *, step: Optional[int] = None) -> List[BatchedKVCache]:
+    def get(self, head_dim: int, kv_heads: List[int], batch_size: int, *, step: Optional[int] = None, paged: bool = True) -> List[BatchedKVCache]:
         key = (head_dim, tuple(kv_heads), batch_size)
         caches = self._pool.get(key)
         if caches is None:
-            caches = [BatchedKVCache(head_dim, n, batch_size) for n in kv_heads]
+            klass = PagedKVCache if paged else BatchedKVCache
+            caches = [klass(head_dim, n, batch_size) for n in kv_heads]
             if step is not None:
                 for c in caches:
                     c.step = step
@@ -269,7 +270,7 @@ class _GlobalPrefixCache:
             if isinstance(model.n_kv_heads, int)
             else model.n_kv_heads
         )
-        caches = _kv_pool.get(model.head_dim, kv_heads, batch_size)
+        caches = _kv_pool.get(model.head_dim, kv_heads, batch_size, paged=True)
         for i, (k1, v1, offset) in enumerate(entry):
             # k1, v1 shapes: (1, n_kv_heads, T, head_dim)
             # Tile to (B, ...)
@@ -388,10 +389,9 @@ def generate_step(
         head_dim = None
     if cache is None:
         if head_dim is not None:
-            # Use an allocation step tuned to expected decode length if known (keep default here)
-            cache = _kv_pool.get(head_dim, kv_heads, y.shape[0])
+            cache = _kv_pool.get(head_dim, kv_heads, y.shape[0], paged=True)
         else:
-            cache = [BatchedKVCache(model.head_dim, n, y.shape[0]) for n in kv_heads]
+            cache = [PagedKVCache(model.head_dim, n, y.shape[0]) for n in kv_heads]
 
     repetition_context = prompts
 
@@ -1217,11 +1217,13 @@ async def batch_generate_text(
             if isinstance(model.n_kv_heads, int)
             else model.n_kv_heads
         )
+        # Compute suffixes now so we can estimate allocation size
+        suffixes = [seq[lcp_len:] for seq in seqs]
         # Estimate an allocation step to reduce reallocation: target roughly suffix length + max_tokens
         est_suffix = max((len(s) for s in suffixes), default=0)
         # Cap to a reasonable power-of-two-ish block size
         desired = max(256, min(8192, int(((est_suffix + max_tokens) // 256 + 1) * 256)))
-        caches = _kv_pool.get(model.head_dim, kv_heads_list, batch_size, step=desired)
+        caches = _kv_pool.get(model.head_dim, kv_heads_list, batch_size, step=desired, paged=True)
 
         # Optional prefill using global prefix cache or LCP to seed caches
         if lcp_len > 0:
@@ -1266,7 +1268,6 @@ async def batch_generate_text(
                     pass
 
         # Build suffix batch (may be empty if entire prompt is LCP)
-        suffixes = [seq[lcp_len:] for seq in seqs]
         max_suffix_len = max((len(s) for s in suffixes), default=0)
         pad_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
         if max_suffix_len > 0:

@@ -13,7 +13,11 @@ from mlx_lm.models.qwen3 import (
 )
 
 # Import BatchedKVCache and mask creation from local base
-from .base import BatchedKVCache, create_additive_causal_mask
+from .base import (
+    BatchedKVCache,
+    create_additive_causal_mask,
+    create_additive_causal_mask_variable,
+)
 
 
 class Attention(nn.Module):
@@ -67,12 +71,21 @@ class Attention(nn.Module):
         values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
         
         if cache is not None:
-            # Use BatchedKVCache's update_and_fetch
-            prev_offset = cache.offset
+            # Update cache and apply RoPE with per-row offsets if available
             keys, values = cache.update_and_fetch(keys, values)
-            # Apply RoPE with offset for queries
-            queries = self.rope(queries, offset=prev_offset)
-            # Apply RoPE to entire key sequence
+            try:
+                offsets = getattr(cache, "offsets", [getattr(cache, "offset", 0)])
+            except Exception:
+                offsets = [getattr(cache, "offset", 0)]
+            if isinstance(offsets, list) and len(offsets) == queries.shape[0]:
+                Bq = queries.shape[0]
+                q_list = []
+                for b in range(Bq):
+                    q_list.append(self.rope(queries[b:b+1], offset=int(offsets[b])))
+                queries = mx.concatenate(q_list, axis=0)
+            else:
+                prev_offset = int(getattr(cache, "offset", 0))
+                queries = self.rope(queries, offset=prev_offset)
             keys = self.rope(keys)
         else:
             queries = self.rope(queries)
@@ -137,9 +150,13 @@ class Qwen3Model(nn.Module):
         
         mask = None
         if h.shape[1] > 1:
-            mask = create_additive_causal_mask(
-                h.shape[1], cache[0].offset if cache is not None else 0
-            )
+            if cache is not None and hasattr(cache, "__getitem__") and getattr(cache[0], "offsets", None) is not None:
+                offsets = getattr(cache[0], "offsets")
+                total_len = int(max(offsets)) + int(h.shape[1])
+                mask = create_additive_causal_mask_variable(int(h.shape[1]), offsets, total_len)
+            else:
+                off = cache[0].offset if cache is not None else 0
+                mask = create_additive_causal_mask(int(h.shape[1]), int(off))
             mask = mask.astype(h.dtype)
         
         if cache is None:
