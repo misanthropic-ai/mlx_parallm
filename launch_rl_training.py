@@ -177,7 +177,7 @@ Examples:
     )
     
     # Model configuration
-    parser.add_argument("--model", default="NousResearch/Hermes-4-Qwen3-14B-1-e3",
+    parser.add_argument("--model", default="./models/hermes-qwen3-14b-4bit",
                        help="Model path or HuggingFace ID")
     parser.add_argument("--lora-path", help="Optional LoRA adapter path")
     
@@ -271,6 +271,7 @@ Examples:
             "--port", str(args.inference_port),
             "--checkpoint-dir", args.checkpoint_dir,
             "--checkpoint-interval", "1",
+            "--save-every-step", "true",
         ]
         
         if args.lora_path:

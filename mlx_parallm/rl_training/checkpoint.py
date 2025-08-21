@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from mlx_parallm.utils import save_weights
+import numpy as np
 from .param_utils import adapter_weights
 
 
@@ -38,7 +39,26 @@ def save_checkpoint(dst_dir: str | Path, step: int, *, config: Dict[str, Any], a
     return out
 
 
-def save_adapter_checkpoint(dst_root: str | Path, model, step: int, *, extra_meta: Optional[Dict[str, Any]] = None) -> Path:
+def _save_adapter_npz(dst_dir: Path, weights: Dict[str, Any]) -> None:
+    arrays = {}
+    for k, v in weights.items():
+        try:
+            arrays[k] = np.array(v)
+        except Exception:
+            # As a fallback, try to bring to host via .to_numpy() if exists
+            to_np = getattr(v, "to_numpy", None)
+            arrays[k] = to_np() if to_np else np.array(v)
+    np.savez(dst_dir / "adapter.npz", **arrays)
+
+
+def save_adapter_checkpoint(
+    dst_root: str | Path,
+    model,
+    step: int,
+    *,
+    extra_meta: Optional[Dict[str, Any]] = None,
+    format: str = "npz",
+) -> Path:
     """Save only adapter weights at a given step.
 
     Writes weights shards and a small adapter.json with metadata.
@@ -51,7 +71,11 @@ def save_adapter_checkpoint(dst_root: str | Path, model, step: int, *, extra_met
         with open(step_dir / "adapter.json", "w") as f:
             json.dump({"note": "no adapter params found", "step": step, **(extra_meta or {})}, f, indent=2)
         return step_dir
-    save_weights(step_dir, weights, donate_weights=False)
+    if format == "npz":
+        _save_adapter_npz(step_dir, weights)
+    else:
+        # Default to safetensors shards
+        save_weights(step_dir, weights, donate_weights=False)
     with open(step_dir / "adapter.json", "w") as f:
         json.dump({"step": step, **(extra_meta or {})}, f, indent=2)
     return step_dir

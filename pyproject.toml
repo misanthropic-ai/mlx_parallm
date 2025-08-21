@@ -75,6 +75,8 @@ dependencies = [
 mlx_parallm_serve = "mlx_parallm.cli:cli_runner"
 mlx_parallm_train = "mlx_parallm.rl_training.train:train_cli_runner"
 mlx_parallm_merge_lora = "mlx_parallm.tools.merge_lora:merge_lora_cli_runner"
+mlx_parallm_convert_adapter = "mlx_parallm.tools.convert_adapter:convert_adapter_cli_runner"
+mlx_parallm_show_checkpoint = "mlx_parallm.tools.show_checkpoint:show_checkpoint_cli_runner"
 
 [dependency-groups]
 dev = [

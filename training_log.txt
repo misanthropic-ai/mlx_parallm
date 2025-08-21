@@ -1,0 +1,108 @@
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.11/subprocess.py:1016: RuntimeWarning: line buffering (buffering=1) isn't supported in binary mode, the default buffer size will be used
+  self.stdout = io.open(c2pread, 'rb', bufsize)
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.11/subprocess.py:1021: RuntimeWarning: line buffering (buffering=1) isn't supported in binary mode, the default buffer size will be used
+  self.stderr = io.open(errread, 'rb', bufsize)
+[95m============================================================[0m
+[95mMLX ParaLLM RL Training Launcher[0m
+[95m============================================================[0m
+Model: ./models/hermes-qwen3-14b-4bit
+Mode: Mock Client
+Steps: 2
+Batch Size: 1
+[95m============================================================[0m
+
+[1mStarting trainer...[0m
+  Command: uv run mlx_parallm_train --model-path ./models/hermes-qwen3-14b-4bit --steps 2 --batch-size 1 --port 8000 --checkpoint-dir checkpoints --checkpoint-interval 1 --save-every-step true
+  Working dir: /Users/shannon/Workspace/artivus/mlx_parallm
+
+[1mTraining in progress...[0m
+Logs are being saved to: logs/20250821_101633
+Press Ctrl+C to stop
+
+[92m[TRAINER][0m INFO:root:mlx_parallm_train starting
+[92m[TRAINER][0m INFO:root:Server thread launched; waiting for readiness...
+[92m[TRAINER][0m INFO:     Started server process [37828]
+[92m[TRAINER][0m INFO:     Waiting for application startup.
+[92m[TRAINER][0m INFO:root:Batch config: MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.1s, REQUEST_TIMEOUT_SECONDS=600.0
+[92m[TRAINER][0m INFO:root:Streaming concurrency limit: MAX_CONCURRENT_STREAMS=4
+[92m[TRAINER][0m INFO:root:Scheduler mode: default
+[92m[TRAINER][0m INFO:root:Attempting to load initial model from CLI: ./models/hermes-qwen3-14b-4bit
+[92m[TRAINER][0m INFO:root:Successfully loaded model: ./models/hermes-qwen3-14b-4bit
+[92m[TRAINER][0m INFO:root:Model ./models/hermes-qwen3-14b-4bit registered with status: loaded
+[92m[TRAINER][0m INFO:root:Batch processing worker task created.
+[92m[TRAINER][0m INFO:root:Streaming batch worker task created.
+[92m[TRAINER][0m INFO:root:Batch processing worker starting. MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.1s
+[92m[TRAINER][0m INFO:root:Batch worker successfully retrieved model './models/hermes-qwen3-14b-4bit'.
+[92m[TRAINER][0m INFO:root:Streaming batch worker starting.
+[92m[TRAINER][0m INFO:     Application startup complete.
+[92m[TRAINER][0m INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[92m[TRAINER][0m INFO:root:Injecting LoRA: num_layers=8, rank=16, keys=['self_attn.q_proj', 'self_attn.v_proj']
+[92m[TRAINER][0m INFO:root:Initialized LoRA adapters saved to: checkpoints/initial_adapter
+[92m[TRAINER][0m INFO:root:Auto-initialized LoRA adapters at: checkpoints/initial_adapter
+[92m[TRAINER][0m INFO:root:Applying adapter to active model: checkpoints/initial_adapter
+[92m[TRAINER][0m [93mWARNING:root:Failed to build ref model; continuing without: 'types.SimpleNamespace' object has no attribute 'lora_parameters'[0m
+[92m[TRAINER][0m INFO:root:Inside create_completion for model ./models/hermes-qwen3-14b-4bit. Parsed stream flag: False, type: <class 'bool'>
+[92m[TRAINER][0m INFO:root:Non-streaming completion request for model ./models/hermes-qwen3-14b-4bit. It will be queued for batch processing.
+[92m[TRAINER][0m INFO:root:Processing batch of 1 requests.
+[92m[TRAINER][0m INFO:root:Calling batch_generate_text_util with 1 expanded prompts.
+[92m[TRAINER][0m INFO:root:Batch fill=12.5% (queue_depth=0)
+[92m[TRAINER][0m INFO:root:Using tokenizer's model_max_length: 131072
+[92m[TRAINER][0m [93mWARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.[0m
+[92m[TRAINER][0m INFO:root:Final effective_max_length for tokenizer: 65536
+[92m[TRAINER][0m INFO:root:Global prefix cache stored (len=11)
+[92m[TRAINER][0m INFO:     127.0.0.1:49793 - "POST /v1/completions HTTP/1.1" 200 OK
+[92m[TRAINER][0m INFO:root:Inside create_completion for model ./models/hermes-qwen3-14b-4bit. Parsed stream flag: False, type: <class 'bool'>
+[92m[TRAINER][0m INFO:root:Non-streaming completion request for model ./models/hermes-qwen3-14b-4bit. It will be queued for batch processing.
+[92m[TRAINER][0m INFO:root:Processing batch of 1 requests.
+[92m[TRAINER][0m INFO:root:Calling batch_generate_text_util with 1 expanded prompts.
+[92m[TRAINER][0m INFO:root:Batch fill=12.5% (queue_depth=0)
+[92m[TRAINER][0m INFO:root:Using tokenizer's model_max_length: 131072
+[92m[TRAINER][0m [93mWARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.[0m
+[92m[TRAINER][0m INFO:root:Final effective_max_length for tokenizer: 65536
+[92m[TRAINER][0m INFO:root:Global prefix cache stored (len=11)
+[92m[TRAINER][0m INFO:     127.0.0.1:49794 - "POST /v1/completions HTTP/1.1" 200 OK
+[92m[TRAINER][0m INFO:root:Inside create_completion for model ./models/hermes-qwen3-14b-4bit. Parsed stream flag: False, type: <class 'bool'>
+[92m[TRAINER][0m INFO:root:Non-streaming completion request for model ./models/hermes-qwen3-14b-4bit. It will be queued for batch processing.
+[92m[TRAINER][0m INFO:root:Processing batch of 1 requests.
+[92m[TRAINER][0m INFO:root:Calling batch_generate_text_util with 1 expanded prompts.
+[92m[TRAINER][0m INFO:root:Batch fill=12.5% (queue_depth=0)
+[92m[TRAINER][0m INFO:root:Using tokenizer's model_max_length: 131072
+[92m[TRAINER][0m [93mWARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.[0m
+[92m[TRAINER][0m INFO:root:Final effective_max_length for tokenizer: 65536
+[92m[TRAINER][0m INFO:root:Global prefix cache stored (len=11)
+[92m[TRAINER][0m INFO:     127.0.0.1:49795 - "POST /v1/completions HTTP/1.1" 200 OK
+[92m[TRAINER][0m INFO:root:Inside create_completion for model ./models/hermes-qwen3-14b-4bit. Parsed stream flag: False, type: <class 'bool'>
+[92m[TRAINER][0m INFO:root:Non-streaming completion request for model ./models/hermes-qwen3-14b-4bit. It will be queued for batch processing.
+[92m[TRAINER][0m INFO:root:Processing batch of 1 requests.
+[92m[TRAINER][0m INFO:root:Calling batch_generate_text_util with 1 expanded prompts.
+[92m[TRAINER][0m INFO:root:Batch fill=12.5% (queue_depth=0)
+[92m[TRAINER][0m INFO:root:Using tokenizer's model_max_length: 131072
+[92m[TRAINER][0m [93mWARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.[0m
+[92m[TRAINER][0m INFO:root:Final effective_max_length for tokenizer: 65536
+[92m[TRAINER][0m INFO:root:Global prefix cache stored (len=11)
+[92m[TRAINER][0m INFO:     127.0.0.1:49796 - "POST /v1/completions HTTP/1.1" 200 OK
+[92m[TRAINER][0m [grad] Must specify at least one argument.  File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/pydantic_cli/__init__.py", line 326, in _runner
+[92m[TRAINER][0m     out = cmd.run()
+[92m[TRAINER][0m           ^^^^^^^^^
+[92m[TRAINER][0m   File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/rl_training/train.py", line 231, in run
+[92m[TRAINER][0m     metrics = trainer.step(batch)
+[92m[TRAINER][0m               ^^^^^^^^^^^^^^^^^^^
+[92m[TRAINER][0m   File "/Users/shannon/Workspace/artivus/mlx_parallm/mlx_parallm/rl_training/grpo_trainer.py", line 258, in step
+[92m[TRAINER][0m     loss_val, grads = loss_and_grad_fn(model)
+[92m[TRAINER][0m                       ^^^^^^^^^^^^^^^^^^^^^^^
+[92m[TRAINER][0m   File "/Users/shannon/Workspace/artivus/mlx_parallm/.venv/lib/python3.11/site-packages/mlx/nn/utils.py", line 35, in wrapped_value_grad_fn
+[92m[TRAINER][0m     value, grad = value_grad_fn(model.trainable_parameters(), *args, **kwargs)
+[92m[TRAINER][0m                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+[91m============================================================[0m
+[91m✗ Training failed with exit code 1[0m
+[91mCheck logs in: logs/20250821_101633[0m
+[91m============================================================[0m
+
+[93mCleaning up processes...[0m
+[92mAll processes terminated[0m
+Logs saved to: logs/20250821_101633
+
+[93mCleaning up processes...[0m
+[92mAll processes terminated[0m
+Logs saved to: logs/20250821_101633

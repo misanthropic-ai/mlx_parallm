@@ -101,46 +101,63 @@ class AtroposClient:
 
 
 class MockAtroposClient:
-    """Generates synthetic scored samples for smoke tests."""
+    """End-to-end mock: queries the running server to produce scored samples.
 
-    def __init__(self):
+    Builds ScoredDataGroups with multiple alternative completions for the same prompt,
+    tokenizes them, and masks prompt tokens out so only generated tokens are trained.
+    """
+
+    def __init__(self, base_url: str, model_id: str, tokenizer):
+        self.base_url = base_url.rstrip("/")
+        self.model_id = model_id
+        self.tokenizer = tokenizer
         self._counter: Iterator[int] = itertools.count(1)
 
-    def fetch(self, batch_size: int) -> Iterable[ScoredDataGroup]:
-        """Generate mock ScoredDataGroups with multiple trajectories each.
-        
-        Each group contains 2-3 alternative trajectories with different rewards.
-        """
-        groups = []
-        for _ in range(batch_size):
-            # Create 2-3 alternative trajectories for each group
-            # Simulating different completions for the same prompt
-            
-            # Trajectory 1: Good response (high reward)
-            toks1 = [1, 2, 3, 4, 5, 6, 7, 8]  # Prompt + response tokens
-            mask1 = [0, 0, 0, 0, 1, 1, 1, 1]  # Last 4 are response tokens
-            score1 = 1.0  # High reward
-            
-            # Trajectory 2: Mediocre response (medium reward)  
-            toks2 = [1, 2, 3, 4, 10, 11]  # Same prompt, different response
-            mask2 = [0, 0, 0, 0, 1, 1]     # Last 2 are response tokens
-            score2 = 0.0  # Medium reward
-            
-            # Trajectory 3: Poor response (low reward)
-            toks3 = [1, 2, 3, 4, 20, 21, 22]  # Same prompt, another response
-            mask3 = [0, 0, 0, 0, 1, 1, 1]     # Last 3 are response tokens
-            score3 = -0.5  # Low reward
-            
-            # Create the group with multiple trajectories
-            group = ScoredDataGroup(
-                tokens=[toks1, toks2, toks3],
-                masks=[mask1, mask2, mask3],
-                scores=[score1, score2, score3],
+    def _complete(self, prompt: str, n: int = 1, max_tokens: int = 16) -> List[str]:
+        import requests
+        outs: List[str] = []
+        for _ in range(n):
+            resp = requests.post(
+                f"{self.base_url}/v1/completions",
+                json={
+                    "model": self.model_id,
+                    "prompt": prompt,
+                    "max_tokens": max_tokens,
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                },
+                timeout=60,
             )
-            
-            # Optionally add precomputed advantages (aligned with ALL tokens per trajectory)
-            # Here we're not providing them, letting GRPO compute from scores
-            
-            groups.append(group)
-            
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["choices"][0]["text"]
+            outs.append(text)
+        return outs
+
+    def _tokenize_pair(self, prompt: str, response: str):
+        tok = self.tokenizer._tokenizer
+        enc_prompt = tok([prompt], return_tensors="np", padding=False)
+        enc_full = tok([prompt + response], return_tensors="np", padding=False)
+        p = enc_prompt["input_ids"][0].tolist()
+        f = enc_full["input_ids"][0].tolist()
+        mask = [0] * len(p) + [1] * (len(f) - len(p))
+        return f, mask
+
+    def fetch(self, batch_size: int) -> Iterable[ScoredDataGroup]:
+        import random
+        groups = []
+        # Fixed simple arithmetic prompt to test consistency
+        prompt = "What is 2 + 2? Answer briefly."
+        for _ in range(batch_size):
+            # Ask server for 4 alternative completions
+            completions = self._complete(prompt, n=4, max_tokens=8)
+            # Score: 1.0 if includes '4', else 0.0
+            scores = [1.0 if ("4" in c) else 0.0 for c in completions]
+            # Tokenize each
+            toks, masks = [], []
+            for c in completions:
+                t, m = self._tokenize_pair(prompt, c)
+                toks.append(t)
+                masks.append(m)
+            groups.append(ScoredDataGroup(tokens=toks, masks=masks, scores=scores))
         return groups
