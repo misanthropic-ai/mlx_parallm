@@ -113,25 +113,40 @@ class MockAtroposClient:
         self.tokenizer = tokenizer
         self._counter: Iterator[int] = itertools.count(1)
 
-    def _complete(self, prompt: str, n: int = 1, max_tokens: int = 16) -> List[str]:
+    def _complete(self, prompt: str, n: int = 1, max_tokens: int = 2048) -> List[str]:
         import requests
+        
+        # GSM8K system prompt
+        system_prompt = """You are a deep thinking AI, you may use extremely long chains of thought to deeply consider the problem and deliberate with yourself via systematic reasoning processes to help come to a correct solution prior to answering. You should enclose your thoughts and internal monologue inside <think> </think> tags, and then provide your solution or response to the problem.
+
+You are allocated a maximum of 2048 tokens, please strive to use less.
+
+You will then provide your answer like this: \\boxed{your answer here}
+It is important that you provide your answer in the correct format.
+If you do not, you will not receive credit for your answer.
+So please end your answer with \\boxed{your answer here}"""
+        
         outs: List[str] = []
-        for _ in range(n):
-            resp = requests.post(
-                f"{self.base_url}/v1/completions",
-                json={
-                    "model": self.model_id,
-                    "prompt": prompt,
-                    "max_tokens": max_tokens,
-                    "temperature": 0.7,
-                    "top_p": 0.95,
-                },
-                timeout=60,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            text = data["choices"][0]["text"]
-            outs.append(text)
+        # Use single request with n parameter for batch generation
+        resp = requests.post(
+            f"{self.base_url}/v1/chat/completions",
+            json={
+                "model": self.model_id,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": max_tokens,
+                "temperature": 0.7,
+                "top_p": 0.95,
+                "n": n,
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        for choice in data["choices"]:
+            outs.append(choice["message"]["content"])
         return outs
 
     def _tokenize_pair(self, prompt: str, response: str):
@@ -145,15 +160,27 @@ class MockAtroposClient:
 
     def fetch(self, batch_size: int) -> Iterable[ScoredDataGroup]:
         import random
+        import re
         groups = []
-        # Fixed simple arithmetic prompt to test consistency
-        prompt = "What is 2 + 2? Answer briefly."
+        # GSM8K-style math problem
+        prompt = "James has 5 apples. He gives 2 apples to his friend. How many apples does James have left?"
         for _ in range(batch_size):
-            # Ask server for 4 alternative completions
-            completions = self._complete(prompt, n=4, max_tokens=8)
-            # Score: 1.0 if includes '4', else 0.0
-            scores = [1.0 if ("4" in c) else 0.0 for c in completions]
-            # Tokenize each
+            # Ask server for 2 alternative completions (like GSM8K group_size=2)
+            completions = self._complete(prompt, n=2, max_tokens=2048)
+            scores = []
+            for completion in completions:
+                # Look for boxed answer format and check if it contains "3"
+                boxed_match = re.search(r'\\boxed\{([^}]+)\}', completion)
+                if boxed_match:
+                    answer = boxed_match.group(1).strip()
+                    # Score: 1.0 if answer is "3", else 0.0
+                    score = 1.0 if answer == "3" else 0.0
+                else:
+                    # No boxed answer found
+                    score = 0.0
+                scores.append(score)
+            
+            # Tokenize each completion with the prompt
             toks, masks = [], []
             for c in completions:
                 t, m = self._tokenize_pair(prompt, c)

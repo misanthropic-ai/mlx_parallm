@@ -18,6 +18,6 @@
   "ref_ema": 1.0,
   "clip_ratio": 0.2,
   "entropy_weight": 0.0,
-  "steps_total": 2,
+  "steps_total": 1,
   "batch_size": 1
 }
