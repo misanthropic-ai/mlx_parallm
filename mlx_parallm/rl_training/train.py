@@ -53,8 +53,9 @@ class TrainCLIArgs(Cmd):
     update_epochs: int = Field(1, description="Update epochs per batch (if used)", cli=["--update-epochs"])
     kl_estimator: str = Field("k3", description="KL estimator: k3|mse|abs", cli=["--kl-estimator"])
     ref_ema: float = Field(1.0, description="EMA factor for reference model (0<ema<1 enables)", cli=["--ref-ema"])
-    kl_estimator: str = Field("k3", description="KL estimator: k3|mse|abs", cli=["--kl-estimator"])
-    ref_ema: float = Field(1.0, description="EMA factor for reference model (0<ema<1 enables)", cli=["--ref-ema"])
+    # Embedded server request timeout
+    request_timeout_seconds: float = Field(86400.0, description="Server per-request timeout seconds", cli=["--request-timeout-seconds"])
+    diverse_mode: bool = Field(True, description="Enable diverse sampling in the embedded server", cli=["--diverse-mode"])
 
     def _launch_server_thread(self):
         def _runner():
@@ -95,6 +96,8 @@ class TrainCLIArgs(Cmd):
             host=self.host,
             port=self.port,
             lora_path=self.lora_path,
+            request_timeout_seconds=self.request_timeout_seconds,
+            diverse_mode=self.diverse_mode,
         )
 
         # Launch server in background

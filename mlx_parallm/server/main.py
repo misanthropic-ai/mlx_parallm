@@ -71,6 +71,7 @@ REQUEST_QUEUE: asyncio.Queue = asyncio.Queue()
 MAX_BATCH_SIZE = 8
 BATCH_TIMEOUT = 0.1
 REQUEST_TIMEOUT_SECONDS = 60.0
+DIVERSE_MODE = False
 
 # Streaming concurrency guard to prevent starvation of batch worker
 MAX_CONCURRENT_STREAMS = 4
@@ -118,9 +119,13 @@ async def startup_event():
             STREAMING_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_STREAMS)
             global SCHEDULER_MODE
             SCHEDULER_MODE = getattr(args, "scheduler", "default")
+            # Diverse mode flag from CLI
+            global DIVERSE_MODE
+            DIVERSE_MODE = bool(getattr(args, "diverse_mode", False))
             logging.info(f"Batch config: MAX_BATCH_SIZE={MAX_BATCH_SIZE}, BATCH_TIMEOUT={BATCH_TIMEOUT}s, REQUEST_TIMEOUT_SECONDS={REQUEST_TIMEOUT_SECONDS}")
             logging.info(f"Streaming concurrency limit: MAX_CONCURRENT_STREAMS={MAX_CONCURRENT_STREAMS}")
             logging.info(f"Scheduler mode: {SCHEDULER_MODE}")
+            logging.info(f"Diverse mode: {DIVERSE_MODE}")
     except Exception as e:
         logging.warning(f"Failed to apply CLI batching/timeouts: {e}")
 
@@ -143,6 +148,19 @@ async def startup_event():
                 SCHEDULER_MODE = str(sched)
         except Exception as e:
             logging.warning(f"Failed to apply env config: {e}")
+
+    # Env override for diverse mode (allows 'true', '1')
+    try:
+        env_div = os.getenv("DIVERSE_MODE") or os.getenv("MLX_PARALLM_DIVERSE")
+        if env_div is not None:
+            val = str(env_div).strip().lower()
+            if val in ("1", "true", "yes", "on"):
+                DIVERSE_MODE = True
+            elif val in ("0", "false", "no", "off"):
+                DIVERSE_MODE = False
+            logging.info(f"Diverse mode (env): {DIVERSE_MODE}")
+    except Exception:
+        pass
 
     model_source = (args.model_path if (args and getattr(args, 'model_path', None)) else env_model)
     if model_source:
@@ -870,6 +888,8 @@ async def batch_processing_worker():
             expanded_request_types: List[str] = []
             # Maps each item in expanded_prompts_for_batch back to its original QueuedRequest and original request_data
             map_expanded_to_original_qr_and_data: List[Tuple[QueuedRequest, Union[CompletionRequest, ChatCompletionRequest]]] = []
+            # Track requested n per original future (robust for assembly)
+            requested_n_by_future: Dict[Future, int] = defaultdict(int)
 
 
             for qr in batch_to_process: # These are unique QueuedRequest objects from the current batch
@@ -911,10 +931,18 @@ async def batch_processing_worker():
                         raise TypeError(f"Unsupported request data type: {type(request_data)}")
 
                     if prompt_text_for_req is not None and req_type_for_req is not None:
-                        for _ in range(num_choices): # Expand for 'n'
-                            expanded_prompts_for_batch.append(prompt_text_for_req)
+                        for choice_idx in range(num_choices): # Expand for 'n'
+                            # For n>1, add invisible variation to prompt for diversity
+                            if num_choices > 1:
+                                # Add zero-width spaces as prompt variation for diversity
+                                varied_prompt = prompt_text_for_req + "\u200b" * choice_idx
+                                expanded_prompts_for_batch.append(varied_prompt)
+                                logging.info(f"[DEBUG] Added {choice_idx} zero-width spaces for diversity (choice {choice_idx+1}/{num_choices})")
+                            else:
+                                expanded_prompts_for_batch.append(prompt_text_for_req)
                             expanded_request_types.append(req_type_for_req)
                             map_expanded_to_original_qr_and_data.append((qr, request_data))
+                            requested_n_by_future[qr.future] += 1
                     else: # Should not happen if logic above is correct
                          logging.error(f"Prompt or request type preparation failed unexpectedly for {request_data}")
                          if not qr.future.done():
@@ -959,32 +987,55 @@ async def batch_processing_worker():
                     METRICS["batch_fill_hist"][int(bin_idx)] += 1
                 except Exception:
                     pass
-                # De-duplicate identical prompts within this batch to avoid redundant compute
-                unique_prompts: List[str] = []
-                unique_map: Dict[str, int] = {}
-                positions_for_unique: List[List[int]] = []
-                for idx, ptxt in enumerate(expanded_prompts_for_batch):
-                    if ptxt in unique_map:
-                        positions_for_unique[unique_map[ptxt]].append(idx)
-                    else:
-                        unique_map[ptxt] = len(unique_prompts)
-                        unique_prompts.append(ptxt)
-                        positions_for_unique.append([idx])
+                # Determine whether to skip deduplication
+                any_n_gt1 = False
+                try:
+                    any_n_gt1 = any(
+                        (getattr(rd, "n", None) is not None and int(getattr(rd, "n")) > 1)
+                        for (_, rd) in map_expanded_to_original_qr_and_data
+                    )
+                except Exception:
+                    any_n_gt1 = False
+                
+                logging.info(f"[DEBUG] DIVERSE_MODE={DIVERSE_MODE}, any_n_gt1={any_n_gt1}")
+                if DIVERSE_MODE or any_n_gt1:
+                    # No dedup: process all expanded prompts individually; also disable prefix cache reuse
+                    generated_results_batch: List[Tuple[str, int, int]] = await batch_generate_text_util(
+                        model=model,
+                        tokenizer=tokenizer,
+                        prompts=expanded_prompts_for_batch,
+                        max_tokens=max_tokens,
+                        temp=temp,
+                        top_p=top_p,
+                        disable_prefix_cache=True,
+                    )
+                else:
+                    # De-duplicate identical prompts within this batch to avoid redundant compute
+                    unique_prompts: List[str] = []
+                    unique_map: Dict[str, int] = {}
+                    positions_for_unique: List[List[int]] = []
+                    for idx, ptxt in enumerate(expanded_prompts_for_batch):
+                        if ptxt in unique_map:
+                            positions_for_unique[unique_map[ptxt]].append(idx)
+                        else:
+                            unique_map[ptxt] = len(unique_prompts)
+                            unique_prompts.append(ptxt)
+                            positions_for_unique.append([idx])
 
-                unique_results: List[Tuple[str, int, int]] = await batch_generate_text_util(
-                    model=model,
-                    tokenizer=tokenizer,
-                    prompts=unique_prompts,
-                    max_tokens=max_tokens, # Consolidated from first request in batch
-                    temp=temp,             # Consolidated from first request in batch
-                    top_p=top_p,
-                )
+                    unique_results: List[Tuple[str, int, int]] = await batch_generate_text_util(
+                        model=model,
+                        tokenizer=tokenizer,
+                        prompts=unique_prompts,
+                        max_tokens=max_tokens, # Consolidated from first request in batch
+                        temp=temp,             # Consolidated from first request in batch
+                        top_p=top_p,
+                    )
 
-                # Expand back to match original ordering
-                generated_results_batch: List[Tuple[str, int, int]] = [None] * len(expanded_prompts_for_batch)  # type: ignore
-                for uidx, positions in enumerate(positions_for_unique):
-                    for pos in positions:
-                        generated_results_batch[pos] = unique_results[uidx]
+                    # Expand back to match original ordering
+                    generated_results_batch = [None] * len(expanded_prompts_for_batch)  # type: ignore
+                    for uidx, positions in enumerate(positions_for_unique):
+                        for pos in positions:
+                            generated_results_batch[pos] = unique_results[uidx]
 
                 # --- Distribute Results ---
                 if len(generated_results_batch) != len(expanded_prompts_for_batch):
@@ -1065,8 +1116,35 @@ async def batch_processing_worker():
                     if not original_qr_final or original_qr_final.future.done(): # Check if future is valid and not already set
                         continue
 
+                    # Respect requested n; pad/trim as needed to ensure choices length matches request
+                    # Derive requested_n from how many expansions mapped to this same future (robust even if request.n missing)
+                    try:
+                        requested_n = int(requested_n_by_future.get(fut, 0))
+                        if requested_n <= 0:
+                            requested_n = 1
+                    except Exception:
+                        requested_n = 1
+
+                    choices_raw = list(result_package["choices_data_list"]) if result_package.get("choices_data_list") else []
+                    logging.info(f"[DEBUG] requested_n={requested_n}, choices_raw count={len(choices_raw)}")
+                    # Pad with last choice if we have fewer than requested_n
+                    if len(choices_raw) > 0 and len(choices_raw) < requested_n:
+                        last = choices_raw[-1]
+                        choices_raw.extend([last] * (requested_n - len(choices_raw)))
+                        logging.info(f"[DEBUG] Padded choices to {len(choices_raw)}")
+                    # Trim if more than requested_n
+                    if requested_n > 0 and len(choices_raw) > requested_n:
+                        choices_raw = choices_raw[:requested_n]
+                        logging.info(f"[DEBUG] Trimmed choices to {len(choices_raw)}")
+
+                    # Debug logging for n and aggregation
+                    try:
+                        logging.info(f"Assembling response: requested_n={requested_n}, aggregated_choices={len(choices_raw)}")
+                    except Exception:
+                        pass
+
                     final_choices_list = []
-                    for idx, choice_raw_data_item in enumerate(result_package["choices_data_list"]):
+                    for idx, choice_raw_data_item in enumerate(choices_raw):
                         choice_raw_data_item["index"] = idx # Set the index for the choice
                         if isinstance(result_package["original_request_data"], CompletionRequest):
                             final_choices_list.append(CompletionChoice(**choice_raw_data_item))
@@ -1332,22 +1410,36 @@ async def continuous_scheduler_worker():
             if not batch_queued:
                 continue
 
-            # Build prompts (mixed batch of completion and chat streaming)
+            # Build prompts with expansion for n>1 (for completion requests only); streaming entries stay 1:1
             prompts_text: List[str] = []
             idx_map: List[Tuple[str, Any]] = []  # ('completion'|'stream', original obj)
+            requested_n_by_future_cs: Dict[Future, int] = defaultdict(int)
             for item in batch_queued:
                 if isinstance(item, QueuedRequest):
                     rd = item.request_data
+                    # Determine 'n' (choices)
+                    n_choices = 1
+                    try:
+                        if hasattr(rd, 'n') and rd.n is not None and int(rd.n) > 0:
+                            n_choices = int(rd.n)
+                    except Exception:
+                        n_choices = 1
                     if isinstance(rd, CompletionRequest):
-                        prompts_text.append(rd.prompt)
-                        idx_map.append(("completion", item))
+                        for j in range(n_choices):
+                            p = rd.prompt if n_choices == 1 else (rd.prompt + ("\u200b" * j))
+                            prompts_text.append(p)
+                            idx_map.append(("completion", item))
+                            requested_n_by_future_cs[item.future] += 1
                     elif isinstance(rd, ChatCompletionRequest):
                         msgs = [m.model_dump(exclude_none=True) for m in rd.messages]
-                        text = apply_chat_template_cached(tokenizer, msgs, add_generation_prompt=True)
-                        prompts_text.append(text)
-                        idx_map.append(("completion", item))
+                        base_text = apply_chat_template_cached(tokenizer, msgs, add_generation_prompt=True)
+                        for j in range(n_choices):
+                            p = base_text if n_choices == 1 else (base_text + ("\u200b" * j))
+                            prompts_text.append(p)
+                            idx_map.append(("completion", item))
+                            requested_n_by_future_cs[item.future] += 1
                 else:
-                    # StreamQueuedChat
+                    # StreamQueuedChat (no expansion)
                     msgs = [m.model_dump(exclude_none=True) for m in item.request.messages]
                     text = apply_chat_template_cached(tokenizer, msgs, add_generation_prompt=True)
                     prompts_text.append(text)
@@ -1486,24 +1578,44 @@ async def continuous_scheduler_worker():
                         pass
                     break
 
-            # Resolve non-streaming completions
+            # Resolve non-streaming completions with aggregation for n>1
             current_time = int(time.time())
+            # Group generated texts by future
+            agg_texts: Dict[Future, List[str]] = defaultdict(list)
+            fut_to_obj: Dict[Future, QueuedRequest] = {}
             for i, (kind, obj) in enumerate(idx_map):
-                if kind == "completion":
-                    if not isinstance(obj, QueuedRequest):
-                        continue
-                    rd = obj.request_data
-                    model_name_for_response = model_id
-                    usage = CompletionUsage(prompt_tokens=int(enc["input_ids"][i].shape[0]), completion_tokens=len(accum_texts[i].split()), total_tokens=0)  # rough estimate
-                    if isinstance(rd, CompletionRequest):
-                        choice = CompletionChoice(text=accum_texts[i], index=0, finish_reason="stop")
-                        resp = CompletionResponse(id=f"cmpl-{uuid.uuid4().hex[:29]}", object="text_completion", created=current_time, model=model_name_for_response, choices=[choice], usage=usage)
-                    else:
-                        msg = ChatMessage(role="assistant", content=accum_texts[i].strip())
-                        ch = ChatCompletionChoice(index=0, message=msg, finish_reason="stop")
-                        resp = ChatCompletionResponse(id=f"chatcmpl-{uuid.uuid4().hex[:28]}", object="chat.completion", created=current_time, model=model_name_for_response, choices=[ch], usage=usage)
-                    if not obj.future.done():
-                        obj.future.set_result(resp)
+                if kind != "completion" or not isinstance(obj, QueuedRequest):
+                    continue
+                fut_to_obj[obj.future] = obj
+                text_i = accum_texts[i]
+                agg_texts[obj.future].append(text_i)
+
+            for fut, texts in agg_texts.items():
+                obj = fut_to_obj.get(fut)
+                if obj is None:
+                    continue
+                rd = obj.request_data
+                model_name_for_response = model_id
+                # Derive requested_n
+                requested_n = int(requested_n_by_future_cs.get(fut, 0))
+                if requested_n <= 0:
+                    requested_n = 1
+                # Pad/trim
+                if len(texts) > requested_n:
+                    texts = texts[:requested_n]
+                elif len(texts) < requested_n:
+                    if len(texts) > 0:
+                        texts = texts + [texts[-1]] * (requested_n - len(texts))
+                # Build choices list
+                usage = CompletionUsage(prompt_tokens=0, completion_tokens=sum(len(t.split()) for t in texts), total_tokens=0)
+                if isinstance(rd, CompletionRequest):
+                    choices = [CompletionChoice(text=t, index=i, finish_reason="stop") for i, t in enumerate(texts)]
+                    resp = CompletionResponse(id=f"cmpl-{uuid.uuid4().hex[:29]}", object="text_completion", created=current_time, model=model_name_for_response, choices=choices, usage=usage)
+                else:
+                    chs = [ChatCompletionChoice(index=i, message=ChatMessage(role="assistant", content=t.strip()), finish_reason="stop") for i, t in enumerate(texts)]
+                    resp = ChatCompletionResponse(id=f"chatcmpl-{uuid.uuid4().hex[:28]}", object="chat.completion", created=current_time, model=model_name_for_response, choices=chs, usage=usage)
+                if not obj.future.done():
+                    obj.future.set_result(resp)
 
             # If we admitted new, loop continues to rebuild batch including new ones
             # If we consumed to exhaustion without admit, finalize decode TPS segment

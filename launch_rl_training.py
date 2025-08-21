@@ -209,6 +209,8 @@ Examples:
     parser.add_argument("--checkpoint-dir", default="checkpoints", help="Directory for adapter checkpoints")
     parser.add_argument("--no-cleanup", action="store_true",
                        help="Don't clean up processes on exit")
+    parser.add_argument("--diverse-mode", action="store_true", default=True,
+                       help="Enable diverse sampling for RL training (default: True)")
     
     args = parser.parse_args()
     
@@ -220,6 +222,7 @@ Examples:
     print(f"Mode: {'Mock Client' if args.mock else f'Real Atropos ({args.environment})'}")
     print(f"Steps: {args.steps}")
     print(f"Batch Size: {args.batch_size}")
+    print(f"Diverse Mode: {'Enabled' if args.diverse_mode else 'Disabled'}")
     print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
     
     # Create service manager
@@ -273,6 +276,10 @@ Examples:
             "--checkpoint-interval", "1",
             "--save-every-step", "true",
         ]
+        
+        # Add diverse mode flag (enabled by default for RL training)
+        if args.diverse_mode:
+            train_cmd.extend(["--diverse-mode", "true"])
         
         if args.lora_path:
             train_cmd.extend(["--lora-path", args.lora_path])

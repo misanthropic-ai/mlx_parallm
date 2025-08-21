@@ -1091,6 +1091,7 @@ async def batch_generate_text(
     max_tokens: int = 100,
     temp: float = 0.7,
     top_p: float = 1.0,
+    disable_prefix_cache: bool = False,
     # repetition_penalty: float = 1.0, # Add if support is needed later
 ) -> List[Tuple[str, int, int]]:
     """
@@ -1226,7 +1227,7 @@ async def batch_generate_text(
         caches = _kv_pool.get(model.head_dim, kv_heads_list, batch_size, step=desired, paged=True)
 
         # Optional prefill using global prefix cache or LCP to seed caches
-        if lcp_len > 0:
+        if lcp_len > 0 and not disable_prefix_cache:
             lcp_tokens = tuple(seqs[0][:lcp_len])
             # Try global prefix cache first (only if length beyond threshold)
             reused = False

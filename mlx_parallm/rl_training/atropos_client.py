@@ -114,7 +114,7 @@ class MockAtroposClient:
         self._counter: Iterator[int] = itertools.count(1)
 
     def _complete(self, prompt: str, n: int = 1, max_tokens: int = 2048) -> List[str]:
-        import requests
+        import requests, os, logging
         
         # GSM8K system prompt
         system_prompt = """You are a deep thinking AI, you may use extremely long chains of thought to deeply consider the problem and deliberate with yourself via systematic reasoning processes to help come to a correct solution prior to answering. You should enclose your thoughts and internal monologue inside <think> </think> tags, and then provide your solution or response to the problem.
@@ -126,27 +126,44 @@ It is important that you provide your answer in the correct format.
 If you do not, you will not receive credit for your answer.
 So please end your answer with \\boxed{your answer here}"""
         
+        # Prefill control: MOCK_PREFILL env can be 'none' or 'think'
+        prefill_mode = os.getenv("MOCK_PREFILL", "think").strip().lower()
+        use_prefill = prefill_mode == "think"
+        prefill = "<think>\n" if use_prefill else ""
+        
         outs: List[str] = []
         # Use single request with n parameter for batch generation
+        # Build messages with optional assistant prefill
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        if use_prefill:
+            messages.append({"role": "assistant", "content": prefill})
+
         resp = requests.post(
             f"{self.base_url}/v1/chat/completions",
             json={
                 "model": self.model_id,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
+                "messages": messages,
                 "max_tokens": max_tokens,
                 "temperature": 0.7,
                 "top_p": 0.95,
                 "n": n,
             },
-            timeout=120,
+            timeout=None,
         )
         resp.raise_for_status()
         data = resp.json()
-        for choice in data["choices"]:
-            outs.append(choice["message"]["content"])
+        for i, choice in enumerate(data.get("choices", [])):
+            # If we used prefill, prepend; else, use content as-is
+            content = choice.get("message", {}).get("content", "")
+            full_response = (prefill + content) if use_prefill else content
+            outs.append(full_response)
+            logging.info(
+                f"MockAtropos(prefill={prefill_mode}) Response {i+1}/{n} (len={len(full_response)}):\n"
+                + full_response[:500] + ("..." if len(full_response) > 500 else "")
+            )
         return outs
 
     def _tokenize_pair(self, prompt: str, response: str):
@@ -161,23 +178,33 @@ So please end your answer with \\boxed{your answer here}"""
     def fetch(self, batch_size: int) -> Iterable[ScoredDataGroup]:
         import random
         import re
+        import logging, os
         groups = []
         # GSM8K-style math problem
         prompt = "James has 5 apples. He gives 2 apples to his friend. How many apples does James have left?"
-        for _ in range(batch_size):
-            # Ask server for 2 alternative completions (like GSM8K group_size=2)
-            completions = self._complete(prompt, n=2, max_tokens=2048)
+        # Allow overriding n via env for experiments (default 2)
+        try:
+            n_choices = int(os.getenv("MOCK_N", "2"))
+            if n_choices <= 0:
+                n_choices = 1
+        except Exception:
+            n_choices = 2
+        for batch_idx in range(batch_size):
+            logging.info(f"MockAtropos: Fetching batch {batch_idx+1}/{batch_size}, requesting n={n_choices} completions")
+            completions = self._complete(prompt, n=n_choices, max_tokens=2048)
             scores = []
-            for completion in completions:
+            for i, completion in enumerate(completions):
                 # Look for boxed answer format and check if it contains "3"
                 boxed_match = re.search(r'\\boxed\{([^}]+)\}', completion)
                 if boxed_match:
                     answer = boxed_match.group(1).strip()
                     # Score: 1.0 if answer is "3", else 0.0
                     score = 1.0 if answer == "3" else 0.0
+                    logging.info(f"  Completion {i+1}: Found \\boxed{{{answer}}} -> score={score}")
                 else:
                     # No boxed answer found
                     score = 0.0
+                    logging.info(f"  Completion {i+1}: No \\boxed answer found -> score=0.0")
                 scores.append(score)
             
             # Tokenize each completion with the prompt

@@ -1,0 +1,23 @@
+INFO:mlx_parallm.cli:Starting server with initial model: models/hermes-qwen3-14b-4bit
+INFO:mlx_parallm.cli:Server will listen on 127.0.0.1:8000
+None of PyTorch, TensorFlow >= 2.0, or Flax have been found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+INFO:     Started server process [92097]
+INFO:     Waiting for application startup.
+INFO:root:Batch config: MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.1s, REQUEST_TIMEOUT_SECONDS=600.0
+INFO:root:Streaming concurrency limit: MAX_CONCURRENT_STREAMS=4
+INFO:root:Scheduler mode: continuous
+INFO:root:Diverse mode: True
+INFO:root:Attempting to load initial model from CLI: models/hermes-qwen3-14b-4bit
+INFO:root:Successfully loaded model: models/hermes-qwen3-14b-4bit
+INFO:root:Model models/hermes-qwen3-14b-4bit registered with status: loaded
+INFO:root:Continuous scheduler worker task created.
+INFO:root:Continuous scheduler starting.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:root:Inside create_completion for model models/hermes-qwen3-14b-4bit. Parsed stream flag: False, type: <class 'bool'>
+INFO:root:Non-streaming completion request for model models/hermes-qwen3-14b-4bit. It will be queued for batch processing.
+INFO:root:Non-streaming chat completion request for model models/hermes-qwen3-14b-4bit. It will be queued for batch processing.
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [92097]

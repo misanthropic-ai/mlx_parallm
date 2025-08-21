@@ -254,6 +254,12 @@ uv run mlx_parallm_train \
   --entropy-weight 0.0 \
   --kl-estimator k3 \
   --ref-ema 1.0
+
+For RL training and agentic workflows, enable diverse batching in the embedded server to encourage sample diversity:
+
+```bash
+  --diverse-mode true
+```
 ```
 
 ### CLI: Atropos Training (safetensors, different KL)
