@@ -1,0 +1,361 @@
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.11/subprocess.py:1016: RuntimeWarning: line buffering (buffering=1) isn't supported in binary mode, the default buffer size will be used
+  self.stdout = io.open(c2pread, 'rb', bufsize)
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.11/subprocess.py:1021: RuntimeWarning: line buffering (buffering=1) isn't supported in binary mode, the default buffer size will be used
+  self.stderr = io.open(errread, 'rb', bufsize)
+[95m============================================================[0m
+[95mMLX ParaLLM RL Training Launcher[0m
+[95m============================================================[0m
+Model: ./models/hermes-qwen3-14b-4bit
+Mode: Mock Client
+Steps: 1
+Batch Size: 2
+Diverse Mode: Enabled
+[95m============================================================[0m
+
+[1mStarting trainer...[0m
+  Command: uv run mlx_parallm_train --model-path ./models/hermes-qwen3-14b-4bit --steps 1 --batch-size 2 --port 8000 --checkpoint-dir checkpoints --checkpoint-interval 1 --save-every-step true --diverse-mode true
+  Working dir: /Users/shannon/Workspace/artivus/mlx_parallm
+
+[1mTraining in progress...[0m
+Logs are being saved to: logs/20250821_162439
+Press Ctrl+C to stop
+
+[92m[TRAINER][0m INFO:root:mlx_parallm_train starting
+[92m[TRAINER][0m INFO:root:Server thread launched; waiting for readiness...
+[92m[TRAINER][0m INFO:     Started server process [9913]
+[92m[TRAINER][0m INFO:     Waiting for application startup.
+[92m[TRAINER][0m INFO:root:Batch config: MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.1s, REQUEST_TIMEOUT_SECONDS=86400.0
+[92m[TRAINER][0m INFO:root:Streaming concurrency limit: MAX_CONCURRENT_STREAMS=4
+[92m[TRAINER][0m INFO:root:Scheduler mode: default
+[92m[TRAINER][0m INFO:root:Diverse mode: True
+[92m[TRAINER][0m INFO:root:Attempting to load initial model from CLI: ./models/hermes-qwen3-14b-4bit
+[92m[TRAINER][0m INFO:root:Successfully loaded model: ./models/hermes-qwen3-14b-4bit
+[92m[TRAINER][0m INFO:root:Model ./models/hermes-qwen3-14b-4bit registered with status: loaded
+[92m[TRAINER][0m INFO:root:Batch processing worker task created.
+[92m[TRAINER][0m INFO:root:Streaming batch worker task created.
+[92m[TRAINER][0m INFO:root:Batch processing worker starting. MAX_BATCH_SIZE=8, BATCH_TIMEOUT=0.1s
+[92m[TRAINER][0m INFO:root:Batch worker successfully retrieved model './models/hermes-qwen3-14b-4bit'.
+[92m[TRAINER][0m INFO:root:Streaming batch worker starting.
+[92m[TRAINER][0m INFO:     Application startup complete.
+[92m[TRAINER][0m INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[92m[TRAINER][0m INFO:root:Injecting LoRA: num_layers=8, rank=16, keys=['self_attn.q_proj', 'self_attn.v_proj']
+[92m[TRAINER][0m INFO:root:Zero-initializing lora_b matrices to preserve base model behavior...
+[92m[TRAINER][0m [91mWARNING:root:LoRA auto-init skipped due to error: 'Model' object has no attribute 'named_parameters'[0m
+[92m[TRAINER][0m INFO:root:MockAtropos: Fetching batch 1/2, requesting n=2 completions
+[92m[TRAINER][0m INFO:root:Non-streaming chat completion request for model ./models/hermes-qwen3-14b-4bit. It will be queued for batch processing.
+[92m[TRAINER][0m INFO:root:Processing batch of 1 requests.
+[92m[TRAINER][0m INFO:root:[DEBUG] Added 0 zero-width spaces for diversity (choice 1/2)
+[92m[TRAINER][0m INFO:root:[DEBUG] Added 1 zero-width spaces for diversity (choice 2/2)
+[92m[TRAINER][0m INFO:root:Calling batch_generate_text_util with 2 expanded prompts.
+[92m[TRAINER][0m INFO:root:Batch fill=25.0% (queue_depth=0)
+[92m[TRAINER][0m INFO:root:[DEBUG] DIVERSE_MODE=True, any_n_gt1=True
+[92m[TRAINER][0m INFO:root:Using tokenizer's model_max_length: 131072
+[92m[TRAINER][0m [93mWARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.[0m
+[92m[TRAINER][0m INFO:root:Final effective_max_length for tokenizer: 65536
+[92m[TRAINER][0m INFO:root:[DEBUG] requested_n=2, choices_raw count=2
+[92m[TRAINER][0m INFO:root:Assembling response: requested_n=2, aggregated_choices=2
+[92m[TRAINER][0m INFO:     127.0.0.1:51819 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+[92m[TRAINER][0m INFO:root:MockAtropos(prefill=think) Response 1/2 (len=2056):
+[92m[TRAINER][0m <think>
+[92m[TRAINER][0m -`"”"’’…—.）？；：‘“《》〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕〕...
+[92m[TRAINER][0m INFO:root:MockAtropos(prefill=think) Response 2/2 (len=2055):
+[92m[TRAINER][0m <think>
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ​
+[92m[TRAINER][0m ...
+[92m[TRAINER][0m INFO:root:  Completion 1: No \boxed answer found -> score=0.0
+[92m[TRAINER][0m INFO:root:  Completion 2: No \boxed answer found -> score=0.0
+[92m[TRAINER][0m INFO:root:MockAtropos: Fetching batch 2/2, requesting n=2 completions
+[92m[TRAINER][0m INFO:root:Non-streaming chat completion request for model ./models/hermes-qwen3-14b-4bit. It will be queued for batch processing.
+[92m[TRAINER][0m INFO:root:Processing batch of 1 requests.
+[92m[TRAINER][0m INFO:root:[DEBUG] Added 0 zero-width spaces for diversity (choice 1/2)
+[92m[TRAINER][0m INFO:root:[DEBUG] Added 1 zero-width spaces for diversity (choice 2/2)
+[92m[TRAINER][0m INFO:root:Calling batch_generate_text_util with 2 expanded prompts.
+[92m[TRAINER][0m INFO:root:Batch fill=25.0% (queue_depth=0)
+[92m[TRAINER][0m INFO:root:[DEBUG] DIVERSE_MODE=True, any_n_gt1=True
+[92m[TRAINER][0m INFO:root:Using tokenizer's model_max_length: 131072
+[92m[TRAINER][0m [93mWARNING:root:Effective max_length 131072 exceeds safety cap of 65536. Capping to 65536.[0m
+[92m[TRAINER][0m INFO:root:Final effective_max_length for tokenizer: 65536
+[92m[TRAINER][0m INFO:root:[DEBUG] requested_n=2, choices_raw count=2
+[92m[TRAINER][0m INFO:root:Assembling response: requested_n=2, aggregated_choices=2
+[92m[TRAINER][0m INFO:     127.0.0.1:51953 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+[92m[TRAINER][0m INFO:root:MockAtropos(prefill=think) Response 1/2 (len=9979):
+[92m[TRAINER][0m <think>
+[92m[TRAINER][0m ((x1−x2)^2+(y1−y2)^2+(z1−z2)^2)＝√((x1−x2)^2+(y1−y2)^2+(z1−z2)^2)
+[92m[TRAINER][0m 
+[92m[TRAINER][0m 这个等式描述的是三维空间中两点之间的欧几里得距离公式。给定两个点 P1(x1, y1, z1) 和 P2(x2, y2, z2)，它们之间的距离可以通过上面的公式计算得出：
+[92m[TRAINER][0m 
+[92m[TRAINER][0m \[ \text{距离} = \sqrt{(x1 - x2)^2 + (y1 - y2)^2 + (z1 - z2)^2} \]
+[92m[TRAINER][0m 
+[92m[TRAINER][0m 这个公式是欧几里得几何中的基本概念之一，用于计算两点间的直线距离。它基于毕达哥拉斯定理，并被扩展到了三维空间。简单来说，就是先分别计算每个坐标轴上两点间的差值，然后将这些差值平方后相加，最后取平方根得到最终的距离。
+[92m[TRAINER][0m 
+[92m[TRAINER][0m 例如，如果有一个点位于坐标系的原点(0, 0, 0)，另一个点位于(3, 4, 0)，那么这两个点Serviço之间的距离就是：
+[92m[TRAINER][0m 
+[92m[TRAINER][0m \[ \sqrt{(3-0)^2 + (4-0)^2 + (0-0)^2} = \sqrt{9 + 16 + 0} = \sqrt{25} = 5 \]
+[92m[TRAINER][0m 
+[92m[TRAINER][0m 这表示两点之间的直线距离为5个单位长度...
+[92m[TRAINER][0m INFO:root:MockAtropos(prefill=think) Response 2/2 (len=7425):
+[92m[TRAINER][0m <think>
+[92m[TRAINER][0m P1: 《Nature》：首次实现原子级分辨率的人类线粒体核糖体结构测定。线粒体核糖体(mt-ribosome)是线粒体内发挥蛋白质翻译功能的关键装置。在目前的生物进化史上，线粒体被认为是独立于细胞核的细胞器，起源于细菌。这导致了它们的核糖体在很大程度上类似于细菌核糖体。因此，它们通常被称为“mitoribosomes”。在这项研究中，研究人员利用冷冻电子显微镜技术首次解析了人类线粒体核糖体的高分辨率结构。这一成果将有助于我们更好地理解线粒体的功能及其在疾病中的作用，为开发针对线粒体疾病的治疗策略提供新的思路。
+[92m[TRAINER][0m P2：《Nature》：揭示了人类免疫系统中一种关键的调节机制。该研究表明，免疫细胞通过特定的信号通路来调控自身的活性，防止过度激活导致组织损伤。具体来说，研究人员发现了一种名为“PD-1”的蛋白质在抑制T细胞活化方面发挥了重要作用。PD-1蛋白通过与配体结合，传递抑制信号，从而限制T细胞的过度反应。这一发现对于理解自身免疫性疾病的发生机制具有重要意义，并可能为开发新的免疫治疗策略提供依据。
+[92m[TRAINER][0m P3：《Nature》：首次报道了在量子计算领域取得的重大突破。研究人...
+[92m[TRAINER][0m INFO:root:  Completion 1: No \boxed answer found -> score=0.0
+[92m[TRAINER][0m INFO:root:  Completion 2: No \boxed answer found -> score=0.0
+[92m[TRAINER][0m INFO:root:[train] step=1 metrics={'loss': 0.0, 'mean_logp': -0.14588418354893826, 'tokens': 8194, 'clip_ratio': 0.0, 'pos_clip_ratio': 0.0, 'neg_clip_ratio': 0.0, 'kl': 0.0}
+[92m[TRAINER][0m INFO:root:Smoke training completed.
+
+[92m============================================================[0m
+[92m✓ Training completed successfully![0m
+[92m============================================================[0m
+
+[93mCleaning up processes...[0m
+[92mAll processes terminated[0m
+Logs saved to: logs/20250821_162439
+
+[93mCleaning up processes...[0m
+[92mAll processes terminated[0m
+Logs saved to: logs/20250821_162439

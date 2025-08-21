@@ -39,7 +39,14 @@ def save_checkpoint(dst_dir: str | Path, step: int, *, config: Dict[str, Any], a
     return out
 
 
+def _save_adapter_safetensors(dst_dir: Path, weights: Dict[str, Any]) -> None:
+    """Save adapter weights as safetensors format expected by MLX-LM."""
+    import mlx.core as mx
+    mx.save_safetensors(str(dst_dir / "adapters.safetensors"), weights)
+
+
 def _save_adapter_npz(dst_dir: Path, weights: Dict[str, Any]) -> None:
+    """Save adapter weights as NPZ format (legacy)."""
     arrays = {}
     for k, v in weights.items():
         try:
@@ -57,7 +64,7 @@ def save_adapter_checkpoint(
     step: int,
     *,
     extra_meta: Optional[Dict[str, Any]] = None,
-    format: str = "npz",
+    format: str = "safetensors",
 ) -> Path:
     """Save only adapter weights at a given step.
 
@@ -71,10 +78,12 @@ def save_adapter_checkpoint(
         with open(step_dir / "adapter.json", "w") as f:
             json.dump({"note": "no adapter params found", "step": step, **(extra_meta or {})}, f, indent=2)
         return step_dir
-    if format == "npz":
+    if format == "safetensors":
+        _save_adapter_safetensors(step_dir, weights)
+    elif format == "npz":
         _save_adapter_npz(step_dir, weights)
     else:
-        # Default to safetensors shards
+        # Fallback to sharded safetensors
         save_weights(step_dir, weights, donate_weights=False)
     with open(step_dir / "adapter.json", "w") as f:
         json.dump({"step": step, **(extra_meta or {})}, f, indent=2)

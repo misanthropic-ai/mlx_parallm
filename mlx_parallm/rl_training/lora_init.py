@@ -89,6 +89,9 @@ def init_lora_if_needed(
     if keys:
         config["keys"] = list(keys)
 
+    # Freeze model first (following MLX-LM pattern)
+    model.freeze()
+    
     # Inject LoRA layers in-place
     logging.info(
         f"Injecting LoRA: num_layers={num_layers}, rank={rank}, keys={list(keys) if keys else 'default'}"
@@ -98,6 +101,18 @@ def init_lora_if_needed(
     # The LoRA layers created by linear_to_lora_layers already handle trainable parameters correctly
     # The base quantized weights are non-trainable, and only lora_a/lora_b are trainable
     # No need to manually freeze/unfreeze
+    
+    # Zero-initialize lora_b matrices to preserve model behavior
+    # This prevents corruption from random initialization while maintaining gradient flow
+    logging.info("Zero-initializing lora_b matrices to preserve base model behavior...")
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+    params = dict(tree_flatten(model.parameters()))
+    for name, param in params.items():
+        if "lora_b" in name:
+            # Zero out the parameter in-place
+            param[:] = mx.zeros_like(param)
+            logging.debug(f"  Zeroed {name} with shape {param.shape}")
     
     # Log how many trainable parameters we have
     from mlx.utils import tree_flatten

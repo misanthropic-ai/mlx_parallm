@@ -35,14 +35,8 @@ class TrainCLIArgs(Cmd):
     checkpoint_dir: Optional[str] = Field(None, description="Directory to write checkpoints.", cli=["--checkpoint-dir"])
     checkpoint_interval: int = Field(50, description="Save adapter checkpoint every N steps.", cli=["--checkpoint-interval"])
     dry_run: bool = Field(False, description="Skip launching server/training; validate config only.", cli=["--dry-run"])
-    # LoRA auto-init controls
-    auto_init_lora: bool = Field(True, description="Auto-initialize LoRA if not provided", cli=["--auto-init-lora"])
-    lora_rank: int = Field(16, description="LoRA rank for auto-initialization", cli=["--lora-rank"])
-    lora_layers: int = Field(8, description="Number of layers to apply LoRA to", cli=["--lora-layers"])
-    lora_dropout: float = Field(0.05, description="LoRA dropout rate", cli=["--lora-dropout"])
-    lora_scale: float = Field(10.0, description="LoRA scaling factor (alpha)", cli=["--lora-scale"])
     save_every_step: bool = Field(False, description="Save adapter checkpoint and refresh server each step", cli=["--save-every-step"])
-    adapter_format: str = Field("npz", description="Adapter format to save (npz|safetensors)", cli=["--adapter-format"])
+    adapter_format: str = Field("safetensors", description="Adapter format to save (npz|safetensors)", cli=["--adapter-format"])
     # GRPO/Trainer hyperparams (CLI overrides config)
     algorithm: str = Field("grpo", description="Training algorithm (currently: grpo)", cli=["--algorithm"])
     learning_rate: float = Field(1e-5, description="Optimizer learning rate", cli=["--learning-rate"])
@@ -113,49 +107,12 @@ class TrainCLIArgs(Cmd):
                     break
                 time.sleep(0.5)
 
-        # If an initial adapter is provided and a model is active, re-apply explicitly
+        # Apply adapter to the model if provided
         rec = get_active_record()
-        if rec:
-            # Auto-initialize LoRA on quantized models when no adapter provided
-            if not self.lora_path and self.auto_init_lora and rec.model_instance is not None:
-                # Prepare hyperparam metadata for the auto-init adapter_config.json
-                auto_meta = {
-                    "algorithm": self.algorithm,
-                    "learning_rate": self.learning_rate,
-                    "max_tokens": self.max_tokens,
-                    "kl_beta": self.kl_beta,
-                    "kl_estimator": self.kl_estimator,
-                    "ref_ema": self.ref_ema,
-                    "clip_ratio": self.clip_ratio,
-                    "entropy_weight": self.entropy_weight,
-                    "steps_total": self.steps,
-                    "batch_size": self.batch_size,
-                }
-                try:
-                    from .lora_init import init_lora_if_needed
-                    auto_adapter_path = init_lora_if_needed(
-                        rec.model_instance,
-                        self.model_path or rec.path_or_hf_id,
-                        self.checkpoint_dir or "./checkpoints",
-                        rank=self.lora_rank,
-                        num_layers=self.lora_layers,
-                        dropout=self.lora_dropout,
-                        scale=self.lora_scale,
-                        adapter_format=self.adapter_format,
-                        extra_meta=auto_meta,
-                    )
-                except Exception as e:
-                    logging.warning(f"LoRA auto-init skipped due to error: {e}")
-                    auto_adapter_path = None
-
-                if auto_adapter_path:
-                    logging.info(f"Auto-initialized LoRA adapters at: {auto_adapter_path}")
-                    self.lora_path = auto_adapter_path
-                    rec.adapter_path = auto_adapter_path
-
-            if self.lora_path:
-                logging.info(f"Applying adapter to active model: {self.lora_path}")
-                apply_lora_update_for_record(rec, self.lora_path, lock=weight_update_lock)
+        if rec and self.lora_path:
+            logging.info(f"Applying adapter to active model: {self.lora_path}")
+            apply_lora_update_for_record(rec, self.lora_path, lock=weight_update_lock)
+            rec.adapter_path = self.lora_path
 
         # Smoke training: use Atropos (mock or real). No optimizer yet; compute metrics and exercise in-process updates
         buffer = RolloutBuffer(maxlen=1024)

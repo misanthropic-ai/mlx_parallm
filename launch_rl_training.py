@@ -265,10 +265,38 @@ Examples:
             time.sleep(5)
             print(f"{Colors.GREEN}✓ Environment server started{Colors.ENDC}")
         
-        # Build training command
+        # MLX directory for running commands
+        mlx_dir = "/Users/shannon/Workspace/artivus/mlx_parallm"
+        
+        # Initialize LoRA if needed
+        adapter_path = args.lora_path or "checkpoints/initial_adapter"
+        
+        if not args.lora_path and not Path(adapter_path).exists():
+            print(f"\n{Colors.BOLD}Initializing LoRA adapter...{Colors.ENDC}")
+            init_cmd = [
+                "uv", "run", "python", "init_lora_standalone.py",
+                "--model", args.model,
+                "--output", adapter_path,
+                "--rank", "16",
+                "--num-layers", "8",
+                "--dropout", "0.05",
+                "--scale", "10.0",
+                "--keys", "self_attn.q_proj", "self_attn.v_proj", "self_attn.k_proj", "self_attn.o_proj",
+                "--format", "safetensors"
+            ]
+            
+            result = subprocess.run(init_cmd, cwd=mlx_dir, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"{Colors.RED}✗ Failed to initialize LoRA adapter{Colors.ENDC}")
+                print(f"Error: {result.stderr}")
+                sys.exit(1)
+            print(f"{Colors.GREEN}✓ LoRA adapter initialized at {adapter_path}{Colors.ENDC}")
+        
+        # Build training command with adapter
         train_cmd = [
             "uv", "run", "mlx_parallm_train",
             "--model-path", args.model,
+            "--lora-path", adapter_path,  # Always include the adapter
             "--steps", str(args.steps),
             "--batch-size", str(args.batch_size),
             "--port", str(args.inference_port),
@@ -281,9 +309,6 @@ Examples:
         if args.diverse_mode:
             train_cmd.extend(["--diverse-mode", "true"])
         
-        if args.lora_path:
-            train_cmd.extend(["--lora-path", args.lora_path])
-        
         if not args.mock:
             train_cmd.extend([
                 "--atropos-url", f"http://localhost:{args.atropos_port}",
@@ -291,7 +316,6 @@ Examples:
             ])
         
         # Start training (includes inference server)
-        mlx_dir = "/Users/shannon/Workspace/artivus/mlx_parallm"
         trainer = manager.start_service(
             "trainer",
             train_cmd,
