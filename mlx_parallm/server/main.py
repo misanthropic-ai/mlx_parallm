@@ -503,7 +503,7 @@ async def _compute_completion_with_logprobs(
             echo_tokens.append(tokenizer_instance._tokenizer.convert_ids_to_tokens([toks[i + 1]])[0])
             echo_token_logprobs.append(lp)
             if topk > 0:
-                pi = np.array(probs_i[0])
+                pi = np.array(probs_i[0].astype(mx.float32))
                 idx = pi.argsort()[::-1][:topk]
                 echo_top_logprobs.append({
                     tokenizer_instance._tokenizer.convert_ids_to_tokens([int(j)])[0]: float(np.log(pi[j]))
@@ -537,7 +537,7 @@ async def _compute_completion_with_logprobs(
         generated_ids.append(tok_id)
         gen_token_logprobs.append(float(mx.log(probs[0, tok_id]).item()))
         if topk > 0:
-            pi = np.array(probs[0])
+            pi = np.array(probs[0].astype(mx.float32))
             idx = pi.argsort()[::-1][:topk]
             gen_top_logprobs.append({
                 tokenizer_instance._tokenizer.convert_ids_to_tokens([int(j)])[0]: float(np.log(pi[j]))

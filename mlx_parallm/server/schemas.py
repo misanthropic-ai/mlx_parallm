@@ -100,7 +100,7 @@ class CompletionResponse(BaseModel):
 class CompletionRequest(BaseModel):
     model: str = Field(..., description="ID of the model to use for completion.")
     prompt: str = Field(..., description="The prompt(s) to generate completions for.")
-    max_tokens: int = Field(100, description="The maximum number of tokens to generate.", gt=0)
+    max_tokens: int = Field(100, description="The maximum number of tokens to generate.", ge=0)
     temperature: float = Field(0.0, description="Sampling temperature. 0 means greedy decoding.", ge=0.0, le=2.0)
     top_p: float = Field(1.0, description="Nucleus sampling parameter.", ge=0.0, le=1.0)
     stream: Optional[bool] = Field(False, description="Whether to stream back partial progress.")
