@@ -258,41 +258,6 @@ async def debug_metrics():
         "decode_tokens_total": METRICS.get("decode_tokens_total", 0),
     }
 
-@app.get("/debug/metrics", tags=["Debug"])
-async def debug_metrics():
-    try:
-        avg_fill = (
-            (METRICS["batch_fill_acc"] / METRICS["batch_fill_samples"]) if METRICS["batch_fill_samples"] else 0.0
-        )
-    except Exception:
-        avg_fill = 0.0
-    # Compute running average TPS where possible
-    try:
-        prompt_tps_avg = (
-            (METRICS["prompt_tokens_total"] / METRICS["prompt_time_total"]) if METRICS["prompt_time_total"] > 1e-9 else 0.0
-        )
-    except Exception:
-        prompt_tps_avg = 0.0
-    try:
-        decode_tps_avg = (
-            (METRICS["decode_tokens_total"] / METRICS["decode_time_total"]) if METRICS["decode_time_total"] > 1e-9 else 0.0
-        )
-    except Exception:
-        decode_tps_avg = 0.0
-    return {
-        "batches_processed": METRICS.get("batches_processed", 0),
-        "avg_batch_fill_pct": avg_fill,
-        "batch_fill_hist": METRICS.get("batch_fill_hist", []),
-        "queue_depth_last": METRICS.get("queue_depth_last", 0),
-        "stream_batches_processed": METRICS.get("stream_batches_processed", 0),
-        "prompt_tps_avg": prompt_tps_avg,
-        "prompt_tps_last": METRICS.get("prompt_tps_last", 0.0),
-        "decode_tps_avg": decode_tps_avg,
-        "decode_tps_last": METRICS.get("decode_tps_last", 0.0),
-        "prompt_tokens_total": METRICS.get("prompt_tokens_total", 0),
-        "decode_tokens_total": METRICS.get("decode_tokens_total", 0),
-    }
-
 @app.get("/v1/models", response_model=ModelList, tags=["Models"])
 async def list_models_endpoint():
     """

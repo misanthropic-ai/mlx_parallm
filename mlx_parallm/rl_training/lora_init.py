@@ -54,6 +54,12 @@ def _save_adapter_npz(dst_dir: Path, weights: Dict[str, Any]) -> None:
     np.savez(dst_dir / "adapter.npz", **arrays)
 
 
+def _save_adapter_safetensors(dst_dir: Path, weights: Dict[str, Any]) -> None:
+    import mlx.core as mx
+
+    mx.save_safetensors(str(dst_dir / "adapters.safetensors"), weights)
+
+
 def init_lora_if_needed(
     model: nn.Module,
     model_path: str,
@@ -125,16 +131,20 @@ def init_lora_if_needed(
     adapter_dir.mkdir(parents=True, exist_ok=True)
 
     weights = adapter_weights(model)
+    # MLX-LM expects `adapters.safetensors` + `adapter_config.json`.
+    # Keep writing NPZ optionally, but always emit the MLX-LM artifacts for compatibility.
+    _save_adapter_safetensors(adapter_dir, weights)
     if adapter_format == "npz":
         _save_adapter_npz(adapter_dir, weights)
-    else:
-        save_weights(adapter_dir, weights)
 
     meta = {
+        # MLX-LM loader fields
+        "fine_tune_type": "lora",
+        "num_layers": int(num_layers),
+        "lora_parameters": config,
+        # Extra metadata fields (ignored by MLX-LM loader)
         "auto_initialized": True,
         "model_path": model_path,
-        **config,
-        "num_layers": int(num_layers),
         "format": adapter_format,
     }
     if extra_meta:

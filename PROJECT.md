@@ -3,11 +3,14 @@
 This file tracks the current work backlog for `mlx_parallm`. Update it as tasks are completed (and link/close GitHub issues when available).
 
 ## Now (P0)
-- [ ] Remove duplicate `GET /debug/metrics` route in `mlx_parallm/server/main.py`
-- [ ] Add minimal `pytest` suite (`tests/`):
-  - [ ] `/health` returns `{status: "ok"}`
-  - [ ] `/v1/completions` works on a tiny/local model fixture
-  - [ ] Optional: a 1-step RL smoke update on a tiny model + adapter
+- [x] Remove duplicate `GET /debug/metrics` route in `mlx_parallm/server/main.py`
+- [x] Add minimal test suite (`tests/`) runnable locally (`unittest`):
+  - [x] `/health` returns `{status: "ok"}`
+  - [x] Single `/v1/completions` request succeeds
+  - [x] Concurrent `/v1/completions` updates `/debug/metrics` (batching sanity)
+  - [x] `/v1/chat/completions` supports `n=2`
+  - [x] Streaming `/v1/chat/completions` ends with `[DONE]`
+  - [x] Server starts with a preloaded LoRA adapter
 - [ ] Replace stale scripts with runnable tests or mark them deprecated:
   - [ ] `test_mock_quick.py`
   - [ ] `test_integration.py`
@@ -24,4 +27,3 @@ This file tracks the current work backlog for `mlx_parallm`. Update it as tasks 
 - [ ] True paged KV allocator (block-based) + eviction/compaction strategy
 - [ ] Multi-model loading and “available_not_loaded” discovery
 - [ ] Observability: richer metrics, optional Prometheus endpoint
-

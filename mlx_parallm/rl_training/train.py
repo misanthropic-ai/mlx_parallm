@@ -205,6 +205,7 @@ class TrainCLIArgs(Cmd):
                 "clip_ratio": self.clip_ratio,
                 "entropy_weight": self.entropy_weight,
                 "adapter_format": self.adapter_format,
+                "lora_path": self.lora_path,
                 "steps_total": self.steps,
                 "batch_size": self.batch_size,
             }

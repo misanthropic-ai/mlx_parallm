@@ -11,6 +11,7 @@
 - RL training “smoke” loop exists:
   - can launch server, collect mock rollouts, run GRPO-like updates, and hot-reload adapter weights.
 - LoRA init for quantized models includes a mitigation for “garbled outputs” (zero-init `lora_b`).
+- Minimal automated test coverage exists under `tests/` (unittest) for health, single + concurrent inference, streaming, and adapter preload.
 
 ## Known issues / tech debt
 - Duplicate route definition: `GET /debug/metrics` is declared twice in `mlx_parallm/server/main.py` and should be de-duplicated.
@@ -29,4 +30,3 @@
   - efficient logprob computation, proper group handling, scalable batching, improved reference-policy coupling.
 - Observability:
   - stable metrics endpoint, better queue/latency/tokens-per-sec reporting, optional Prometheus export.
-
