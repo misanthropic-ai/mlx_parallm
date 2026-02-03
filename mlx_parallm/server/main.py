@@ -70,7 +70,8 @@ METRICS: Dict[str, Any] = {
 REQUEST_QUEUE: asyncio.Queue = asyncio.Queue()
 MAX_BATCH_SIZE = 8
 BATCH_TIMEOUT = 0.1
-REQUEST_TIMEOUT_SECONDS = 60.0
+# Default should be permissive; the CLI defaults to 86400s and env overrides exist.
+REQUEST_TIMEOUT_SECONDS = 86400.0
 DIVERSE_MODE = False
 
 # Streaming concurrency guard to prevent starvation of batch worker
@@ -848,8 +849,25 @@ async def batch_processing_worker():
     model = None
     tokenizer = None
     # Dynamic fetch of CLI args to avoid stale reference
-    _args = getattr(_cli_mod, "current_server_args", None) if '_cli_mod' in globals() else None
-    model_id_from_args = _args.model_path if (_args and getattr(_args, 'model_path', None)) else None # Get the configured model path
+    def _resolve_model_id() -> Optional[str]:
+        _args = getattr(_cli_mod, "current_server_args", None) if _cli_mod else None
+        mp = getattr(_args, "model_path", None) if _args else None
+        if mp:
+            return str(mp)
+        env_model = os.getenv("MLX_PARALLM_MODEL") or os.getenv("MODEL_PATH") or os.getenv("MODEL")
+        if env_model:
+            return str(env_model)
+        try:
+            from mlx_parallm.server.state import get_active_record
+
+            rec = get_active_record()
+            if rec is not None:
+                return str(rec.id)
+        except Exception:
+            pass
+        return None
+
+    model_id_from_args = _resolve_model_id()
 
     # Try to get model/tokenizer initially. If not available, will try again in loop.
     model_record_initial = model_registry.get(model_id_from_args) if model_id_from_args else None
@@ -862,6 +880,10 @@ async def batch_processing_worker():
 
 
     while True:
+        # If the app was started via an entrypoint where CLI globals don't share state with the
+        # ASGI-imported module (e.g., `python -m mlx_parallm.cli`), fall back to env/active record.
+        if not model_id_from_args:
+            model_id_from_args = _resolve_model_id()
         if not model or not tokenizer: # Periodically check if model got loaded
             model_record_check = model_registry.get(model_id_from_args) if model_id_from_args else None
             if model_record_check and model_record_check.model_instance and model_record_check.tokenizer_instance:
@@ -1425,10 +1447,27 @@ async def continuous_scheduler_worker():
     global model_registry
     logging.info("Continuous scheduler starting.")
     # Determine model
-    _args = getattr(_cli_mod, "current_server_args", None) if '_cli_mod' in globals() else None
-    model_id = getattr(_args, "model_path", None)
+    def _resolve_model_id() -> Optional[str]:
+        _args = getattr(_cli_mod, "current_server_args", None) if _cli_mod else None
+        mp = getattr(_args, "model_path", None) if _args else None
+        if mp:
+            return str(mp)
+        env_model = os.getenv("MLX_PARALLM_MODEL") or os.getenv("MODEL_PATH") or os.getenv("MODEL")
+        if env_model:
+            return str(env_model)
+        try:
+            from mlx_parallm.server.state import get_active_record
+
+            rec = get_active_record()
+            if rec is not None:
+                return str(rec.id)
+        except Exception:
+            pass
+        return None
+
+    model_id = _resolve_model_id()
     if not model_id:
-        logging.error("No model_path provided for scheduler.")
+        logging.error("No model_path provided for scheduler (cli/env/active record all empty).")
         return
     while True:
         rec = model_registry.get(model_id)

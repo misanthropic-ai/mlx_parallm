@@ -12,6 +12,7 @@ import uvicorn
 from mlx_parallm.server.state import get_active_record, weight_update_lock, model_registry
 from mlx_parallm.rl_training.weight_updater import apply_lora_update_for_record
 from mlx_parallm.rl_training.atropos_client import MockAtroposClient, AtroposClient
+from mlx_parallm.rl_training.lora_init import init_lora_if_needed
 from mlx_parallm.rl_training.trainer_base import RLTrainerBase
 from mlx_parallm.rl_training.rollout_buffer import RolloutBuffer
 from mlx_parallm.rl_training.grpo_trainer import GRPOTrainer, GRPOConfig
@@ -113,6 +114,26 @@ class TrainCLIArgs(Cmd):
             logging.info(f"Applying adapter to active model: {self.lora_path}")
             apply_lora_update_for_record(rec, self.lora_path, lock=weight_update_lock)
             rec.adapter_path = self.lora_path
+        elif rec and self.model_path:
+            # Auto-init LoRA for quantized models when no adapter was provided.
+            # This matches the intended "single shared model instance with live adapter updates" workflow.
+            ckpt_root = self.checkpoint_dir or "checkpoints"
+            try:
+                created = init_lora_if_needed(
+                    rec.model_instance,
+                    model_path=self.model_path,
+                    checkpoint_dir=ckpt_root,
+                    adapter_format=self.adapter_format,
+                    extra_meta={
+                        "created_by": "mlx_parallm_train",
+                    },
+                )
+                if created:
+                    self.lora_path = created
+                    rec.adapter_path = created
+                    logging.info(f"Auto-initialized LoRA adapter at: {created}")
+            except Exception as e:
+                logging.warning(f"Auto LoRA init skipped/failed: {e}")
 
         # Smoke training: use Atropos (mock or real). No optimizer yet; compute metrics and exercise in-process updates
         buffer = RolloutBuffer(maxlen=1024)

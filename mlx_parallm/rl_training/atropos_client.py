@@ -141,6 +141,14 @@ So please end your answer with \\boxed{your answer here}"""
         if use_prefill:
             messages.append({"role": "assistant", "content": prefill})
 
+        # Allow env override so smoke tests don't accidentally request huge generations.
+        try:
+            env_max = int(os.getenv("MOCK_MAX_TOKENS", "").strip() or "0")
+        except Exception:
+            env_max = 0
+        if env_max > 0:
+            max_tokens = min(int(max_tokens), int(env_max))
+
         resp = requests.post(
             f"{self.base_url}/v1/chat/completions",
             json={
