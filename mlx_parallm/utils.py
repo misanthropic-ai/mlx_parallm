@@ -1092,6 +1092,7 @@ async def batch_generate_text(
     temp: float = 0.7,
     top_p: float = 1.0,
     disable_prefix_cache: bool = False,
+    max_context_length: Optional[int] = None,
     # repetition_penalty: float = 1.0, # Add if support is needed later
 ) -> List[Tuple[str, int, int]]:
     """
@@ -1130,35 +1131,42 @@ async def batch_generate_text(
     original_padding_side = tokenizer._tokenizer.padding_side
     tokenizer._tokenizer.padding_side = "left"
 
-    tokenizer_configured_max_length = getattr(tokenizer._tokenizer, 'model_max_length', None)
-    effective_max_length = 2048
-    if tokenizer_configured_max_length is not None:
-        try:
-            candidate_max_length = int(tokenizer_configured_max_length)
-            if candidate_max_length > 0:
-                effective_max_length = candidate_max_length
-                logging.info(f"Using tokenizer's model_max_length: {effective_max_length}")
-            else:
+    # Use configured max_context_length if provided, otherwise fall back to tokenizer config
+    if max_context_length is not None:
+        effective_max_length = max_context_length
+        logging.info(f"Using configured max_context_length: {effective_max_length}")
+    else:
+        tokenizer_configured_max_length = getattr(tokenizer._tokenizer, 'model_max_length', None)
+        effective_max_length = 2048
+        if tokenizer_configured_max_length is not None:
+            try:
+                candidate_max_length = int(tokenizer_configured_max_length)
+                if candidate_max_length > 0:
+                    effective_max_length = candidate_max_length
+                    logging.info(f"Using tokenizer's model_max_length: {effective_max_length}")
+                else:
+                    effective_max_length = 2048
+                    logging.warning(
+                        f"Tokenizer's model_max_length ({tokenizer_configured_max_length}) is not positive. Using default {effective_max_length}."
+                    )
+            except (ValueError, TypeError):
                 effective_max_length = 2048
                 logging.warning(
-                    f"Tokenizer's model_max_length ({tokenizer_configured_max_length}) is not positive. Using default {effective_max_length}."
+                    f"Tokenizer's model_max_length ('{tokenizer_configured_max_length}') is not a valid integer. Using default {effective_max_length}."
                 )
-        except (ValueError, TypeError):
+        else:
             effective_max_length = 2048
-            logging.warning(
-                f"Tokenizer's model_max_length ('{tokenizer_configured_max_length}') is not a valid integer. Using default {effective_max_length}."
+            logging.info(
+                f"Tokenizer's model_max_length not found or is None. Using default {effective_max_length}."
             )
-    else:
-        effective_max_length = 2048
-        logging.info(
-            f"Tokenizer's model_max_length not found or is None. Using default {effective_max_length}."
-        )
-    MAX_SUPPORTED_TOKENIZER_LENGTH = 65536
-    if effective_max_length > MAX_SUPPORTED_TOKENIZER_LENGTH:
-        logging.warning(
-            f"Effective max_length {effective_max_length} exceeds safety cap of {MAX_SUPPORTED_TOKENIZER_LENGTH}. Capping to {MAX_SUPPORTED_TOKENIZER_LENGTH}."
-        )
-        effective_max_length = MAX_SUPPORTED_TOKENIZER_LENGTH
+        # Apply safety cap only when using tokenizer's detected max_length
+        MAX_SUPPORTED_TOKENIZER_LENGTH = 65536
+        if effective_max_length > MAX_SUPPORTED_TOKENIZER_LENGTH:
+            logging.warning(
+                f"Effective max_length {effective_max_length} exceeds safety cap of {MAX_SUPPORTED_TOKENIZER_LENGTH}. Capping to {MAX_SUPPORTED_TOKENIZER_LENGTH}."
+            )
+            effective_max_length = MAX_SUPPORTED_TOKENIZER_LENGTH
+    
     logging.info(f"Final effective_max_length for tokenizer: {effective_max_length}")
 
     try:
@@ -1247,6 +1255,8 @@ async def batch_generate_text(
                 lcp_mx = mx.array(lcp_np)
                 # One forward pass to populate caches with shared prefix
                 _ = model(lcp_mx, cache=caches)
+                # Ensure GPU operations are completed
+                mx.eval(_)
                 # Store single-seq KV snapshot for potential reuse
                 try:
                     layer_kv = []
@@ -1297,6 +1307,9 @@ async def batch_generate_text(
             if step_num >= max_tokens: # Overall max_tokens for new generation
                 break
 
+            # Ensure GPU operations are completed for this generation step
+            mx.eval(batch_next_token_ids)
+
             any_sequence_active_this_step = False
             for i in range(batch_size):
                 if not active_sequences[i]:
@@ -1322,6 +1335,9 @@ async def batch_generate_text(
             num_completion_toks = len(generated_tokens_per_prompt[i])
             current_prompt_actual_tokens = num_prompt_tokens_list[i]
             final_results.append((decoded_text, current_prompt_actual_tokens, num_completion_toks))
+        
+        # Ensure all GPU operations are completed before returning
+        mx.eval(mx.array([0]))  # Simple eval to synchronize GPU state
         
         return final_results
 

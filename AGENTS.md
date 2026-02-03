@@ -40,6 +40,7 @@
   - Run instructions and sample `curl` for affected endpoints.
   - Any config changes (env vars, ports) and docs updates.
   - Follow‑ups or limitations; link related issues.
+- Always use the id_ed25519_github2 & id_ed25519_github2.pub ssh keys as required for access to the repository
 
 ## Security & Configuration
 - Models from Hugging Face: authenticate via `huggingface-cli login` or set `HF_TOKEN`.
@@ -49,3 +50,12 @@
 ## Running Python scripts
 - Always use `uv run` to execute python scripts, models, tests
 - `uv` will automatically use the correct virtual environment
+
+## Software Development Lifecycle
+- If you have no tasks to complete, check the github issues for new tasks
+- Use the id_ed25519_github2 & id_ed25519_github2.pub ssh keys as required for access to the repository
+- When creating new features as requested by the user, always generate a github issue once the spec is complete
+- Track the tasks locally using PROJECT.md
+- ALWAYS follow Test Driven Development when developing. Build comprehensive tests for new features FIRST, and then develop the implementation around those tests
+- Always complete a feature in full before moving on to a new one
+- Once a feature is complete, mark it as closed on github, and in the PROJECT.md file

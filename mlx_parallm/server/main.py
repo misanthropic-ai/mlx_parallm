@@ -404,6 +404,36 @@ async def create_completion(request: CompletionRequest):
     if record.status != ModelStatus.LOADED or not record.model_instance or not record.tokenizer_instance:
         raise HTTPException(status_code=409, detail=f"Model '{request.model}' is not currently loaded or ready.")
 
+    # Get max_context_length from CLI args for validation
+    max_context_length = 32768  # Default fallback
+    if _cli_mod and _cli_mod.current_server_args:
+        max_context_length = getattr(_cli_mod.current_server_args, "max_context_length", 32768)
+
+    # Validate prompt length
+    tokenizer_instance = record.tokenizer_instance
+    if not isinstance(tokenizer_instance, TokenizerWrapper):
+        tokenizer_instance = TokenizerWrapper(tokenizer_instance)
+    
+    try:
+        prompt_tokens = len(tokenizer_instance.encode(request.prompt))
+        max_available_context = max_context_length - request.max_tokens
+        
+        if prompt_tokens > max_available_context:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Prompt too long: {prompt_tokens} tokens exceeds maximum context "
+                       f"({max_available_context} available = {max_context_length} total - {request.max_tokens} max_tokens). "
+                       f"Please reduce prompt length or max_tokens."
+            )
+        
+        if prompt_tokens > max_context_length * 0.9:  # Warning threshold
+            logging.warning(
+                f"Large prompt: {prompt_tokens} tokens is close to context limit "
+                f"({max_context_length}). Consider reducing prompt size."
+            )
+    except Exception as e:
+        logging.warning(f"Failed to validate prompt length: {e}")
+
     model_instance = record.model_instance
     # Ensure tokenizer_instance is TokenizerWrapper for stream_generate_text_util
     if not isinstance(record.tokenizer_instance, TokenizerWrapper):
@@ -482,33 +512,83 @@ async def _compute_completion_with_logprobs(
     echo_token_logprobs = []
     echo_top_logprobs = []
     if request.echo:
-        logits_full = model_instance(prompt_mx)  # (1, L, V)
+        ECHO_CHUNK_THRESHOLD = int(os.getenv("ECHO_CHUNK_THRESHOLD", "1024"))
+        ECHO_CHUNK_SIZE = int(os.getenv("ECHO_CHUNK_SIZE", "512"))
+        
         toks = prompt_ids[0].tolist()
-        for i in range(L - 1):
-            logits_i = logits_full[:, i, :]
-            # Apply logit_bias if provided
-            if request.logit_bias:
-                for k, v in request.logit_bias.items():
-                    try:
-                        tid = int(k)
-                    except ValueError:
-                        tid = tokenizer_instance._tokenizer.convert_tokens_to_ids(k)
-                    if tid is not None and tid >= 0:
-                        logits_i[:, tid] = logits_i[:, tid] + float(v)
-            if temperature and temperature > 0:
-                logits_i = logits_i * (1.0 / temperature)
-            probs_i = mx.softmax(logits_i, axis=-1)
-            token_id = int(prompt_mx[0, i + 1].item())
-            lp = float(mx.log(probs_i[0, token_id]).item())
-            echo_tokens.append(tokenizer_instance._tokenizer.convert_ids_to_tokens([toks[i + 1]])[0])
-            echo_token_logprobs.append(lp)
-            if topk > 0:
-                pi = np.array(probs_i[0].astype(mx.float32))
-                idx = pi.argsort()[::-1][:topk]
-                echo_top_logprobs.append({
-                    tokenizer_instance._tokenizer.convert_ids_to_tokens([int(j)])[0]: float(np.log(pi[j]))
-                    for j in idx
-                })
+        
+        if L > ECHO_CHUNK_THRESHOLD:
+            # Process in chunks to avoid Metal GPU command buffer issues
+            logging.info(f"Using chunked echo processing for prompt length {L} (threshold: {ECHO_CHUNK_THRESHOLD}, chunk_size: {ECHO_CHUNK_SIZE})")
+            
+            for chunk_start in range(0, L - 1, ECHO_CHUNK_SIZE):
+                chunk_end = min(chunk_start + ECHO_CHUNK_SIZE, L - 1)
+                
+                # For each chunk, we need the full prefix up to chunk_end + 1 to compute logprobs
+                chunk_tokens = prompt_mx[:, :chunk_end + 2]  # Include next token for each position
+                
+                logits_chunk = model_instance(chunk_tokens)  # (1, chunk_len, V)
+                mx.eval(logits_chunk)  # Ensure GPU operations complete
+                
+                # Extract logprobs only for positions in this chunk
+                for i in range(chunk_start, chunk_end):
+                    if i >= L - 1:  # Safety check
+                        break
+                        
+                    logits_i = logits_chunk[:, i, :]
+                    # Apply logit_bias if provided
+                    if request.logit_bias:
+                        for k, v in request.logit_bias.items():
+                            try:
+                                tid = int(k)
+                            except ValueError:
+                                tid = tokenizer_instance._tokenizer.convert_tokens_to_ids(k)
+                            if tid is not None and tid >= 0:
+                                logits_i[:, tid] = logits_i[:, tid] + float(v)
+                    if temperature and temperature > 0:
+                        logits_i = logits_i * (1.0 / temperature)
+                    probs_i = mx.softmax(logits_i, axis=-1)
+                    token_id = int(prompt_mx[0, i + 1].item())
+                    lp = float(mx.log(probs_i[0, token_id]).item())
+                    echo_tokens.append(tokenizer_instance._tokenizer.convert_ids_to_tokens([toks[i + 1]])[0])
+                    echo_token_logprobs.append(lp)
+                    if topk > 0:
+                        pi = np.array(probs_i[0].astype(mx.float32))
+                        idx = pi.argsort()[::-1][:topk]
+                        echo_top_logprobs.append({
+                            tokenizer_instance._tokenizer.convert_ids_to_tokens([int(j)])[0]: float(np.log(pi[j]))
+                            for j in idx
+                        })
+        else:
+            # Original non-chunked processing for smaller prompts
+            logits_full = model_instance(prompt_mx)  # (1, L, V)
+            mx.eval(logits_full)  # Ensure GPU operations complete
+            
+            for i in range(L - 1):
+                logits_i = logits_full[:, i, :]
+                # Apply logit_bias if provided
+                if request.logit_bias:
+                    for k, v in request.logit_bias.items():
+                        try:
+                            tid = int(k)
+                        except ValueError:
+                            tid = tokenizer_instance._tokenizer.convert_tokens_to_ids(k)
+                        if tid is not None and tid >= 0:
+                            logits_i[:, tid] = logits_i[:, tid] + float(v)
+                if temperature and temperature > 0:
+                    logits_i = logits_i * (1.0 / temperature)
+                probs_i = mx.softmax(logits_i, axis=-1)
+                token_id = int(prompt_mx[0, i + 1].item())
+                lp = float(mx.log(probs_i[0, token_id]).item())
+                echo_tokens.append(tokenizer_instance._tokenizer.convert_ids_to_tokens([toks[i + 1]])[0])
+                echo_token_logprobs.append(lp)
+                if topk > 0:
+                    pi = np.array(probs_i[0].astype(mx.float32))
+                    idx = pi.argsort()[::-1][:topk]
+                    echo_top_logprobs.append({
+                        tokenizer_instance._tokenizer.convert_ids_to_tokens([int(j)])[0]: float(np.log(pi[j]))
+                        for j in idx
+                    })
 
     # Generate with per-step logprobs
     y = prompt_mx
@@ -998,6 +1078,12 @@ async def batch_processing_worker():
                     any_n_gt1 = False
                 
                 logging.info(f"[DEBUG] DIVERSE_MODE={DIVERSE_MODE}, any_n_gt1={any_n_gt1}")
+                
+                # Get max_context_length from CLI args
+                max_context_length = None
+                if _cli_mod and _cli_mod.current_server_args:
+                    max_context_length = getattr(_cli_mod.current_server_args, "max_context_length", None)
+                
                 if DIVERSE_MODE or any_n_gt1:
                     # No dedup: process all expanded prompts individually; also disable prefix cache reuse
                     generated_results_batch: List[Tuple[str, int, int]] = await batch_generate_text_util(
@@ -1008,6 +1094,7 @@ async def batch_processing_worker():
                         temp=temp,
                         top_p=top_p,
                         disable_prefix_cache=True,
+                        max_context_length=max_context_length,
                     )
                 else:
                     # De-duplicate identical prompts within this batch to avoid redundant compute
@@ -1029,6 +1116,7 @@ async def batch_processing_worker():
                         max_tokens=max_tokens, # Consolidated from first request in batch
                         temp=temp,             # Consolidated from first request in batch
                         top_p=top_p,
+                        max_context_length=max_context_length,
                     )
 
                     # Expand back to match original ordering

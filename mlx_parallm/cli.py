@@ -29,6 +29,7 @@ class ServerCLIArgs(Cmd):
     max_concurrent_streams: int = Field(4, description="Limit for concurrent streaming responses to protect batch throughput.", cli=["--max-concurrent-streams"])
     scheduler: str = Field("default", description="Scheduler mode: 'default' or 'continuous' (admit-on-step).", cli=["--scheduler"])
     diverse_mode: bool = Field(False, description="Enable diverse sampling mode (disable deduplication, reduce caching)", cli=["--diverse-mode"])
+    max_context_length: int = Field(32768, description="Maximum context length for the model (input + output tokens).", cli=["--max-context-length"])
     # We'll add more arguments like workers, log_level, config_file later
     # Log level for Uvicorn can be set directly in uvicorn.run
 
