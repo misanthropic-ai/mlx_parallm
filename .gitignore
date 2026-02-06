@@ -6,3 +6,5 @@ logs*
 models/*
 checkpoints/*
 checkpoint*
+.coverage
+.coverage.*

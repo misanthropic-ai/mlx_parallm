@@ -101,10 +101,7 @@ def start_server(
         log_dir = Path(tempfile.mkdtemp(prefix=f"mlx_parallm_server_{port}_"))
         log_path = log_dir / "server.log"
 
-    args = [
-        sys.executable,
-        "-m",
-        "mlx_parallm.cli",
+    cli_args = [
         "--model-path",
         str(model_path),
         "--host",
@@ -122,6 +119,21 @@ def start_server(
         "--diverse-mode",
         "true" if diverse_mode else "false",
     ]
+    if os.getenv("MLX_PARALLM_COVERAGE") in ("1", "true", "yes", "on"):
+        args = [
+            sys.executable,
+            "-m",
+            "coverage",
+            "run",
+            "--parallel-mode",
+            "--source",
+            "mlx_parallm",
+            "-m",
+            "mlx_parallm.cli",
+            *cli_args,
+        ]
+    else:
+        args = [sys.executable, "-m", "mlx_parallm.cli", *cli_args]
     if lora_path is not None:
         args += ["--lora-path", str(lora_path)]
     if extra_args:
@@ -142,9 +154,19 @@ def start_server(
 def stop_server(h: ServerHandle) -> None:
     if h.proc.poll() is not None:
         return
+    # If the server was started under `coverage run`, SIGTERM can end up killing the
+    # coverage runner before it writes its data file. SIGINT typically yields a
+    # cleaner shutdown path.
+    is_coverage = False
     try:
-        h.proc.send_signal(signal.SIGTERM)
-        h.proc.wait(timeout=10)
+        args = h.proc.args
+        if isinstance(args, (list, tuple)) and "coverage" in [str(a) for a in args]:
+            is_coverage = True
+    except Exception:
+        is_coverage = False
+    try:
+        h.proc.send_signal(signal.SIGINT if is_coverage else signal.SIGTERM)
+        h.proc.wait(timeout=30 if is_coverage else 10)
     except Exception:
         try:
             h.proc.kill()
